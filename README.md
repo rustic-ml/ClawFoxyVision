@@ -2,81 +2,121 @@
 
 This project implements a machine learning pipeline for stock price prediction using Rust, Polars, and Burn (PyTorch backend).
 
+---
+
 ## Project Structure
 
-The project is organized into three main steps:
+```
+├── src/
+│   ├── main.rs                # Entry point, orchestrates the pipeline
+│   ├── constants.rs           # Technical indicators, model constants
+│   ├── util/
+│   │   ├── feature_engineering.rs   # Adds technical indicators
+│   │   ├── pre_processor.rs        # Loads and preprocesses data
+│   │   ├── model_utils.rs          # Model saving/loading utilities
+│   │   └── mod.rs
+│   └── lstm/
+│       ├── step_1_tensor_preparation.rs   # Data to tensor conversion
+│       ├── step_2_lstm_cell.rs           # LSTM cell implementation
+│       ├── step_3_lstm_model_arch.rs     # LSTM model architecture
+│       ├── step_4_train_model.rs         # Training and evaluation
+│       ├── step_5_prediction.rs          # Prediction utilities
+│       ├── step_6_model_serialization.rs # Model (de)serialization
+│       └── mod.rs
+├── build.rs
+├── Cargo.toml
+├── .gitignore
+├── README.md
+├── LICENSE
+└── [large CSV files, e.g., AAPL-ticker_minute_bars.csv] (ignored by git)
+```
 
-1. **Data Preprocessing** (`step_1_preprocessor.rs`)
-   - Loads and preprocesses stock market data
-   - Handles data cleaning and initial transformations
+---
 
-2. **Feature Engineering** (`step_2_feature_engineering.rs`)
-   - Adds technical indicators (SMA, RSI, MACD)
-   - Prepares features for model training
+## Main Pipeline
 
-3. **LSTM Model** (`step_3_burn_lstm_model.rs`)
+1. **Data Preprocessing** (`util/pre_processor.rs`)
+   - Loads and preprocesses stock market data from CSV
+   - Handles missing values and sorts by timestamp
+2. **Feature Engineering** (`util/feature_engineering.rs`)
+   - Adds technical indicators (SMA, RSI, MACD, Bollinger Bands, ATR, returns, etc.)
+3. **Tensor Preparation** (`lstm/step_1_tensor_preparation.rs`)
+   - Converts DataFrame to tensors for model input
+4. **LSTM Model** (`lstm/step_3_lstm_model_arch.rs`, `lstm/step_2_lstm_cell.rs`)
    - Implements an LSTM neural network using Burn
-   - Trains on the prepared features to predict stock prices
+5. **Training** (`lstm/step_4_train_model.rs`)
+   - Trains the model and evaluates on a test split
+6. **Prediction** (`lstm/step_5_prediction.rs`)
+   - Generates forecasts and denormalizes predictions
+7. **Model Serialization** (`lstm/step_6_model_serialization.rs`, `util/model_utils.rs`)
+   - Saves and loads model checkpoints with metadata
+
+---
 
 ## Dependencies
 
-- Rust (latest stable version)
-- Polars
-- Burn (with PyTorch backend)
-- PyTorch (LibTorch) for ARM64
+- Rust (edition 2021)
+- polars = { version = "0.46.0", features = ["lazy", "strings", "temporal", "rolling_window"] }
+- burn = { version = "0.17.0", features = ["tch", "ndarray"] }
+- burn-core, burn-autodiff, burn-train, burn-tch, burn-ndarray = "0.17.0"
+- bincode = "2.0.1"
+- chrono = "0.4.34"
+- thiserror = "2.0.11"
+- anyhow = "1.0.75"
+- serde = { version = "1.0", features = ["derive"] }
+- serde_json = "1.0"
+- tempfile = "3.0"
+- ndarray = "0.16.1"
 
-## Building PyTorch (LibTorch) for ARM64
+---
 
-To build PyTorch for ARM64 architecture:
+## Data Format
 
-```bash
-# Clone PyTorch repository
-git clone --recursive https://github.com/pytorch/pytorch
-cd pytorch
+The input data should be in CSV format with the following fields:
+- `symbol`: Stock symbol (e.g., AAPL, MSFT)
+- `time`: Timestamp of the data point
+- `open`, `high`, `low`, `close`: Price data
+- `volume`: Trading volume
+- `vwap`: Volume-weighted average price
 
-# Configure build for ARM64
-export USE_CUDA=0
-export USE_MKLDNN=0
-export USE_NNPACK=0
-export USE_QNNPACK=0
-export USE_PYTORCH_QNNPACK=0
-export USE_XNNPACK=0
+> **Note:** Large CSV files (such as `AAPL-ticker_minute_bars.csv`) are ignored by git. Place your data files in the project root as needed.
 
-# Build PyTorch
-python setup.py build
-
-# Install LibTorch
-python setup.py install
-```
+---
 
 ## Usage
 
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd rust-ml
+cd burn-timeseries
 ```
-
 2. Build the project:
 ```bash
 cargo build
 ```
-
 3. Run the project:
 ```bash
-cargo run
+cargo run -- [TICKER] [MODEL_TYPE]
+# Example: cargo run -- AAPL lstm
 ```
+
+---
 
 ## Features
 
 - Efficient data processing with Polars
-- Technical indicator calculation
-- LSTM-based price prediction
-- GPU acceleration support (when available)
+- Rich technical indicator calculation
+- LSTM-based price prediction using Burn
+- Model versioning and checkpointing
+- ARM64 and CPU-only PyTorch (LibTorch) support
+
+---
 
 ## License
 
 [Your chosen license]
+
+---
 
 ## Contributing
 
@@ -176,12 +216,12 @@ The process may take 1–4 hours depending on your system (e.g., 4-core ARM64 wi
 Monitor for errors. If the build fails, check the last 20 lines of output or build/log.txt.
 
 Step 5: Install LibTorch
-Copy the built LibTorch artifacts to a designated directory (e.g., /home/orange/libtorch).
-rm -rf /home/orange/libtorch
-mkdir -p /home/orange/libtorch
-cp -r build/lib /home/orange/libtorch/lib
-cp -r torch/include /home/orange/libtorch/include
-cp -r torch/share /home/orange/libtorch/share
+Copy the built LibTorch artifacts to a designated directory (e.g., $HOME/libtorch).
+rm -rf $HOME/libtorch
+mkdir -p $HOME/libtorch
+cp -r build/lib $HOME/libtorch/lib
+cp -r torch/include $HOME/libtorch/include
+cp -r torch/share $HOME/libtorch/share
 
 
 lib/: Contains libtorch.so, libtorch_cpu.so, libc10.so, etc.
@@ -191,23 +231,23 @@ share/: Contains CMake configuration for linking.
 Step 6: Verify the Build
 Confirm the build is correct for ARM64 and functional.
 6.1 Check Library Architecture
-ls -l /home/orange/libtorch/lib
-file /home/orange/libtorch/lib/libtorch.so
-file /home/orange/libtorch/lib/libtorch_cpu.so
-file /home/orange/libtorch/lib/libc10.so
+ls -l $HOME/libtorch/lib
+file $HOME/libtorch/lib/libtorch.so
+file $HOME/libtorch/lib/libtorch_cpu.so
+file $HOME/libtorch/lib/libc10.so
 
 
-Expected output:/home/orange/libtorch/lib/libtorch.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
-/home/orange/libtorch/lib/libtorch_cpu.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
-/home/orange/libtorch/lib/libc10.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
+Expected output:$HOME/libtorch/lib/libtorch.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
+$HOME/libtorch/lib/libtorch_cpu.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
+$HOME/libtorch/lib/libc10.so: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), ...
 
 
 If the architecture shows x86-64 or libraries are missing, the build failed.
 
 6.2 Check Headers
 Verify the presence of required headers.
-ls /home/orange/libtorch/include/torch
-ls /home/orange/libtorch/include/torch/csrc/autograd
+ls $HOME/libtorch/include/torch
+ls $HOME/libtorch/include/torch/csrc/autograd
 
 
 Expect torch.h in include/torch/ and engine.h in include/torch/csrc/autograd/.
@@ -225,8 +265,8 @@ int main() {
 }
 
 Compile and run:
-g++ -o test_torch test_torch.cpp -I/home/orange/libtorch/include -L/home/orange/libtorch/lib -ltorch -ltorch_cpu -lc10 -std=c++17
-LD_LIBRARY_PATH=/home/orange/libtorch/lib:$LD_LIBRARY_PATH ./test_torch
+g++ -o test_torch test_torch.cpp -I$HOME/libtorch/include -L$HOME/libtorch/lib -ltorch -ltorch_cpu -lc10 -std=c++17
+LD_LIBRARY_PATH=$HOME/libtorch/lib:$LD_LIBRARY_PATH ./test_torch
 
 
 Expected output: A random 2x3 tensor (e.g., tensor([[0.1234, 0.5678, 0.9012], ...]])).
