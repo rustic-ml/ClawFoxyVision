@@ -1,0 +1,26 @@
+# Rust build
+/target/
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Cargo
+Cargo.lock
+
+# Logs
+*.log
+
+# Large data files
+# *.csv
+
+# By default, ignore everything in the root except source and config
+!src/
+!Cargo.toml
+!build.rs
+!README.md
+!LICENSE 
