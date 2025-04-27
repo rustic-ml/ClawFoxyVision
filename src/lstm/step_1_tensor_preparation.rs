@@ -106,6 +106,16 @@ pub fn dataframe_to_tensors<B: Backend>(
     sequence_length: usize,
     device: &B::Device,
 ) -> PolarsResult<(Tensor<B, 3>, Tensor<B, 2>)> {
+    println!("DEBUG: Called dataframe_to_tensors");
+    // Select only the columns in TECHNICAL_INDICATORS, in the correct order
+    let df = df.select(TECHNICAL_INDICATORS)?;
+    // Drop all rows with nulls to avoid shape mismatches
+    let df = df.drop_nulls::<String>(None)?;
+    println!(
+        "DEBUG: DataFrame shape after select/drop_nulls: {:?}, columns: {:?}",
+        df.shape(),
+        df.get_column_names()
+    );
     let n_samples = df.height();
     let feature_columns: Vec<&str> = TECHNICAL_INDICATORS.iter().copied().collect();
     let n_features = feature_columns.len();
@@ -129,7 +139,11 @@ pub fn dataframe_to_tensors<B: Backend>(
     let columns: Vec<Series> = feature_columns
         .iter()
         .map(|&name| df.column(name).unwrap().as_series().unwrap().clone())
-                .collect();
+        .collect();
+    for (idx, col) in columns.iter().enumerate() {
+        println!("DEBUG: Column {} (name: {}) length: {}", idx, feature_columns[idx], col.len());
+    }
+    println!("DEBUG: columns.len() = {}, columns[0].len() = {}", columns.len(), columns[0].len());
     let close_idx = feature_columns
         .iter()
         .position(|&c| c == "close")
@@ -138,10 +152,12 @@ pub fn dataframe_to_tensors<B: Backend>(
     let mut target_data = Vec::with_capacity(n_sequences);
 
     for i in 0..n_sequences {
-        // Features: sequence_length rows, all feature columns
         for j in 0..sequence_length {
-            for col in &columns {
-                let val = col.f64().unwrap().get(i + j).unwrap_or(0.0);
+            for k in 0..n_features {
+                let val = columns[k].f64().unwrap().get(i + j).unwrap_or(0.0);
+                if features_data.len() < 20 {
+                    println!("DEBUG: features_data[{}] = {} (i={}, j={}, k={})", features_data.len(), val, i, j, k);
+                }
                 features_data.push(val as f32);
             }
         }
@@ -149,18 +165,41 @@ pub fn dataframe_to_tensors<B: Backend>(
         let target = columns[close_idx].f64().unwrap().get(i + sequence_length).unwrap_or(0.0);
         target_data.push(target as f32);
     }
+    let expected_len = n_sequences * sequence_length * n_features;
+    println!(
+        "DEBUG: n_sequences={}, sequence_length={}, n_features={}",
+        n_sequences, sequence_length, n_features
+    );
+    println!(
+        "DEBUG: types: n_sequences={}, sequence_length={}, n_features={}",
+        std::any::type_name_of_val(&n_sequences),
+        std::any::type_name_of_val(&sequence_length),
+        std::any::type_name_of_val(&n_features)
+    );
+    println!(
+        "DEBUG: n_sequences * sequence_length = {}",
+        n_sequences * sequence_length
+    );
+    println!(
+        "DEBUG: n_sequences * sequence_length * n_features = {}",
+        n_sequences * sequence_length * n_features
+    );
+    println!(
+        "DEBUG: n_sequences={}, sequence_length={}, n_features={}, product={}, features_data.len()={}",
+        n_sequences, sequence_length, n_features, n_sequences * sequence_length * n_features, features_data.len()
+    );
+    if features_data.len() != expected_len {
+        panic!(
+            "Mismatch: features_data.len() = {}, expected = {} (n_sequences={}, sequence_length={}, n_features={})",
+            features_data.len(), expected_len, n_sequences, sequence_length, n_features
+        );
+    }
     let features_shape = Shape::new([n_sequences, sequence_length, n_features]);
     let target_shape = Shape::new([n_sequences, 1]);
-    let features_tensor = Tensor::<B, 3>::from_floats(
-        features_data.as_slice(),
-        device,
-    )
-    .reshape(features_shape);
-    let target_tensor = Tensor::<B, 2>::from_floats(
-        target_data.as_slice(),
-        device,
-    )
-    .reshape(target_shape);
+    let features_tensor: Tensor<B, 3> = Tensor::<B, 1>::from_floats(features_data.as_slice(), device)
+        .reshape(features_shape);
+    let target_tensor: Tensor<B, 2> = Tensor::<B, 1>::from_floats(target_data.as_slice(), device)
+        .reshape(target_shape);
     Ok((features_tensor, target_tensor))
 }
 
@@ -171,6 +210,7 @@ pub fn build_burn_lstm_model(
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 3>,
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 2>,
 )> {
+    println!("DEBUG: Called build_burn_lstm_model");
     type BurnBackend = burn::backend::LibTorch<f32>;
     let device = <BurnBackend as burn::tensor::backend::Backend>::Device::default();
     dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, &device)
