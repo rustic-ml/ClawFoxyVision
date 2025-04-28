@@ -68,7 +68,7 @@ fn main() -> PolarsResult<()> {
     }
 
     // Generate predictions
-    match generate_predictions(df) {
+    match generate_predictions(df, 390) {
         Ok(_) => println!("Prediction generation completed successfully."),
         Err(e) => eprintln!("Error during prediction generation: {}", e),
     }
@@ -108,8 +108,9 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     } else {
         // Train model
         println!("Starting model training...");
+        let forecast_horizon = 390;
         let (trained_model, _) =
-            lstm::step_4_train_model::train_model::<BurnBackend>(train_df.clone(), training_config, &device, ticker, model_type)
+            lstm::step_4_train_model::train_model::<BurnBackend>(train_df.clone(), training_config, &device, ticker, model_type, forecast_horizon)
                 .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
         println!("Trained and saved new model.");
     }
@@ -125,7 +126,8 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         &device
     ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
     // Perform evaluation
-    let rmse = lstm::step_4_train_model::evaluate_model(&trained_model, test_df.clone(), &device)
+    let forecast_horizon = 390;
+    let rmse = lstm::step_4_train_model::evaluate_model(&trained_model, test_df.clone(), &device, forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
     println!("Test RMSE: {:.4}", rmse);
 
@@ -133,24 +135,34 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     Ok(model_path)
 }
 
-fn generate_predictions(df: DataFrame) -> Result<(), PolarsError> {
+fn generate_predictions(df: DataFrame, forecast_horizon: usize) -> Result<(), PolarsError> {
     // Initialize device
     type BurnBackend = LibTorch<f32>;
     let device = <BurnBackend as BurnBackendTrait>::Device::default();
 
     // Prepare data tensors
-    let (features, _) = step_1_tensor_preparation::build_burn_lstm_model(df.clone())
+    let (features, _) = step_1_tensor_preparation::build_burn_lstm_model(df.clone(), forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Tensor building error: {}", e).into()))?;
 
-    // Initialize model
-    let input_dim = features.dims()[2];
-    let hidden_dim = 64; // hidden_dim
-    let output_dim = 1; // typically 1 for time series prediction
-    let num_layers = 2; // number of LSTM layers
-    let bidirectional = true; // use bidirectional LSTM
-    let dropout = 0.2; // dropout probability
+    // Load model metadata to get correct hyperparameters
+    let ticker = std::env::args().nth(1).unwrap_or("AAPL".to_string());
+    let model_type = std::env::args().nth(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
+    let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
+    let (_loaded_model, metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
+        &ticker,
+        &model_type,
+        &model_name,
+        &device,
+    ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
 
-    // Create model with explicit parameters instead of using factory function
+    let input_dim = features.dims()[2];
+    let hidden_dim = metadata.hidden_size;
+    let output_dim = metadata.output_size;
+    let num_layers = metadata.num_layers;
+    let bidirectional = metadata.bidirectional;
+    let dropout = metadata.dropout;
+
+    // Create model with loaded hyperparameters
     let model: step_3_lstm_model_arch::TimeSeriesLstm<BurnBackend> =
         step_3_lstm_model_arch::TimeSeriesLstm::new(
             input_dim,
@@ -162,12 +174,10 @@ fn generate_predictions(df: DataFrame) -> Result<(), PolarsError> {
             &device,
         );
 
-    // Generate per-minute forecast for a full trading day (390 minutes)
-    let minutes_per_day = 390; // US stock market: 6.5 hours * 60 minutes
-    println!("Generating per-minute forecast for a full trading day ({} minutes)...", minutes_per_day);
-    let forecast_horizon = minutes_per_day;
+    // Generate direct multi-step forecast for a full trading day (390 minutes)
+    println!("Generating direct multi-step forecast for the next trading day ({} minutes)...", forecast_horizon);
     let predictions =
-        step_5_prediction::generate_forecast(&model, df.clone(), forecast_horizon, &device)
+        step_5_prediction::predict_multi_step_direct(&model, df.clone(), &device, forecast_horizon)
             .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
 
     // Denormalize predictions to original scale

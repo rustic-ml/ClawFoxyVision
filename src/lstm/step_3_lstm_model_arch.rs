@@ -11,6 +11,7 @@ pub struct TimeSeriesLstm<B: Backend> {
     // since the Burn API has changed significantly
     input_size: usize,
     hidden_size: usize,
+    output_size: usize,
     attention: Attention<B>,
     dropout: Dropout,
     output: Linear<B>,
@@ -22,37 +23,34 @@ impl<B: Backend> TimeSeriesLstm<B> {
     pub fn new(
         input_size: usize,
         hidden_size: usize,
-        _output_size: usize,
+        output_size: usize,
         num_layers: usize,
         bidirectional: bool,
         dropout_prob: f64,
         device: &B::Device,
     ) -> Self {
         // Configure LSTM
-        // We'll use placeholders instead of actual LSTM in this example
-        // to avoid complex API issues with the Burn library version
-
-        // Initialize components
-        let attention = Attention::new(hidden_size, device);
-        
+        let lstm_output_size = if bidirectional { 2 * hidden_size } else { hidden_size };
+        let attention = Attention::new(lstm_output_size, device);
         let dropout_config = DropoutConfig::new(dropout_prob);
         let dropout = dropout_config.init();
-        
-        // Fix output layer dimensions
-        // We want to map from hidden_size to 1 (output_size)
-        let output_config = LinearConfig::new(hidden_size, 1);
+        let output_config = LinearConfig::new(lstm_output_size, output_size);
         let output = output_config.init(device);
-
         let lstm = LSTM::new(input_size, hidden_size, num_layers, bidirectional, device);
-
         Self {
             input_size,
             hidden_size,
+            output_size,
             attention,
             dropout,
             output,
             lstm,
         }
+    }
+
+    /// Getter for input_size
+    pub fn input_size(&self) -> usize {
+        self.input_size
     }
 
     /// Forward pass of the LSTM model
@@ -66,15 +64,16 @@ impl<B: Backend> TimeSeriesLstm<B> {
         // Apply pooling (currently using last step)
         let batch_size = attended.dims()[0];
         let last_step_idx = attended.dims()[1] - 1;
+        let lstm_output_size = attended.dims()[2];
         
         // Extract the last step from the sequence and reshape
         let pooled = attended.narrow(1, last_step_idx, 1)
-            .reshape([batch_size, self.hidden_size]);
+            .reshape([batch_size, lstm_output_size]);
         
         // Apply dropout before the final layer
         let dropped = self.dropout.forward(pooled);
         
-        // Apply the output layer - no need to reshape as it will be [batch_size, 1]
+        // Apply the output layer - now outputs [batch_size, output_size]
         self.output.forward(dropped)
     }
 }

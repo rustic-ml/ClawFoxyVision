@@ -43,11 +43,12 @@ pub fn train_model<B: Backend>(
     device: &B::Device,
     ticker: &str,
     model_type: &str,
+    forecast_horizon: usize,
 ) -> Result<(TimeSeriesLstm<B>, Vec<f64>)> {
     println!("Starting model training...");
 
     // Build tensors from the dataframe
-    let (features, targets) = step_1_tensor_preparation::build_burn_lstm_model(df)?;
+    let (features, targets) = step_1_tensor_preparation::build_burn_lstm_model(df, forecast_horizon)?;
     println!(
         "Data prepared: features shape: {:?}, targets shape: {:?}",
         features.dims(),
@@ -61,7 +62,7 @@ pub fn train_model<B: Backend>(
 
     // Get input and output sizes before moving features and targets
     let input_size = features.dims()[2];
-    let output_size = targets.dims()[1];
+    let output_size = forecast_horizon;
 
     // Split data into train and test sets - using clone to prevent move errors
     let _train_features = features.clone().narrow(0, 0, train_size);
@@ -112,6 +113,7 @@ pub fn train_model<B: Backend>(
                 epoch,
                 input_size,
                 hidden_size,
+                output_size,
                 num_layers,
                 bidirectional,
                 dropout,
@@ -127,6 +129,7 @@ pub fn train_model<B: Backend>(
         &model_name,
         input_size,
         hidden_size,
+        output_size,
         num_layers,
         bidirectional,
         dropout,
@@ -141,9 +144,10 @@ pub fn evaluate_model<B: Backend>(
     _model: &TimeSeriesLstm<B>,
     test_df: DataFrame,
     _device: &B::Device,
+    forecast_horizon: usize,
 ) -> Result<f64> {
     // Build tensors from the dataframe - adding _ to indicate unused variables
-    let (_features, _targets) = step_1_tensor_preparation::build_burn_lstm_model(test_df)?;
+    let (_features, _targets) = step_1_tensor_preparation::build_burn_lstm_model(test_df, forecast_horizon)?;
 
     // Due to type compatibility issues, we can't properly implement evaluation
     // Return a placeholder result for compilation
@@ -428,13 +432,13 @@ mod tests {
         println!("Testing actual train_model function - this might fail if DataFrame doesn't match expected structure");
 
         // Actual training test
-        let train_result = train_model::<NdArray>(df.clone(), config, &device, "AAPL", "lstm");
+        let train_result = train_model::<NdArray>(df.clone(), config, &device, "AAPL", "lstm", 1);
 
         if train_result.is_ok() {
             let (model, _) = train_result.unwrap();
 
             // Actual evaluation test
-            let eval_result = evaluate_model::<NdArray>(&model, df, &device);
+            let eval_result = evaluate_model::<NdArray>(&model, df, &device, 1);
 
             if eval_result.is_ok() {
                 assert_eq!(eval_result.unwrap(), 0.0);
@@ -469,6 +473,7 @@ mod tests {
             model_name,
             input_size,
             hidden_size,
+            1, // output_size
             num_layers,
             bidirectional,
             dropout,

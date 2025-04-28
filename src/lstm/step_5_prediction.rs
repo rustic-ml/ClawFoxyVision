@@ -27,7 +27,7 @@ pub fn predict_next_step<B: Backend>(
     
     // Skip tensor creation for empty dataframes in tests
     if !df.is_empty() {
-        let _ = step_1_tensor_preparation::build_burn_lstm_model(df)?;
+        let _ = step_1_tensor_preparation::build_burn_lstm_model(df, 1)?;
     }
 
     // Return a placeholder value
@@ -120,6 +120,42 @@ pub fn denormalize_predictions(
     let denormalized = predictions.iter().map(|&p| (p * range) + min).collect();
 
     Ok(denormalized)
+}
+
+/// Direct multi-step (multi-output) prediction: returns all future steps at once
+pub fn predict_multi_step_direct(
+    model: &TimeSeriesLstm<burn::backend::LibTorch<f32>>,
+    df: DataFrame,
+    device: &<burn::backend::LibTorch<f32> as burn::tensor::backend::Backend>::Device,
+    forecast_horizon: usize,
+) -> Result<Vec<f64>> {
+    // Prepare the most recent sequence as input
+    let sequence_length = crate::constants::SEQUENCE_LENGTH;
+    let n_rows = df.height();
+    if n_rows < sequence_length {
+        return Err(anyhow::anyhow!("Not enough rows in DataFrame for input sequence"));
+    }
+    let mut input_df = df.slice(n_rows as i64 - (sequence_length as i64 + 1), (sequence_length + 1) as usize);
+    // Ensure columns match training (order and count)
+    input_df = input_df.select(crate::constants::TECHNICAL_INDICATORS)?;
+    // Build input tensor (features only, shape [1, sequence_length, n_features])
+    let (features, _) = super::step_1_tensor_preparation::build_burn_lstm_model(input_df, 1)?;
+    println!("features shape: {:?}", features.dims());
+    println!("DEBUG: model.input_size = {}, features shape = {:?}", model.input_size(), features.dims());
+    // features: [1, sequence_length, n_features]
+    let output = model.forward(features); // [1, forecast_horizon]
+    let output_data = output.to_data();
+    let output_vec: Vec<f64> = output_data
+        .convert::<f32>()
+        .as_slice::<f32>()
+        .unwrap()
+        .iter()
+        .map(|&v| v as f64)
+        .collect();
+    if output_vec.len() != forecast_horizon {
+        return Err(anyhow::anyhow!(format!("Model output length {} does not match forecast_horizon {}", output_vec.len(), forecast_horizon)));
+    }
+    Ok(output_vec)
 }
 
 #[cfg(test)]

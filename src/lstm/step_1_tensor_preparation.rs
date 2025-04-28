@@ -96,6 +96,7 @@ fn normalize_features(df: &mut DataFrame) -> PolarsResult<()> {
 ///
 /// * `df` - Input DataFrame containing normalized features
 /// * `sequence_length` - Number of time steps in each sequence
+/// * `forecast_horizon` - Number of time steps to forecast
 /// * `device` - The device to create tensors on
 ///
 /// # Returns
@@ -104,6 +105,7 @@ fn normalize_features(df: &mut DataFrame) -> PolarsResult<()> {
 pub fn dataframe_to_tensors<B: Backend>(
     df: &DataFrame,
     sequence_length: usize,
+    forecast_horizon: usize,
     device: &B::Device,
 ) -> PolarsResult<(Tensor<B, 3>, Tensor<B, 2>)> {
     println!("DEBUG: Called dataframe_to_tensors");
@@ -119,11 +121,11 @@ pub fn dataframe_to_tensors<B: Backend>(
     let n_samples = df.height();
     let feature_columns: Vec<&str> = TECHNICAL_INDICATORS.iter().copied().collect();
     let n_features = feature_columns.len();
-    if n_samples < sequence_length + 1 {
+    if n_samples < sequence_length + forecast_horizon {
         return Err(PolarsError::ComputeError(
             format!(
-                "DataFrame has too few rows ({}) for sequence_length ({})",
-                n_samples, sequence_length
+                "DataFrame has too few rows ({}) for sequence_length ({}) and forecast_horizon ({})",
+                n_samples, sequence_length, forecast_horizon
             )
             .into(),
         ));
@@ -134,7 +136,7 @@ pub fn dataframe_to_tensors<B: Backend>(
             return Err(PolarsError::ComputeError(format!("Column '{}' not found", col).into()));
         }
     }
-    let n_sequences = n_samples - sequence_length;
+    let n_sequences = n_samples - sequence_length - forecast_horizon + 1;
     // Collect owned Series for each feature column
     let columns: Vec<Series> = feature_columns
         .iter()
@@ -149,7 +151,7 @@ pub fn dataframe_to_tensors<B: Backend>(
         .position(|&c| c == "close")
         .expect("'close' column not found");
     let mut features_data = Vec::with_capacity(n_sequences * sequence_length * n_features);
-    let mut target_data = Vec::with_capacity(n_sequences);
+    let mut target_data = Vec::with_capacity(n_sequences * forecast_horizon);
 
     for i in 0..n_sequences {
         for j in 0..sequence_length {
@@ -161,9 +163,11 @@ pub fn dataframe_to_tensors<B: Backend>(
                 features_data.push(val as f32);
             }
         }
-        // Target: next close value
-        let target = columns[close_idx].f64().unwrap().get(i + sequence_length).unwrap_or(0.0);
-        target_data.push(target as f32);
+        // Multi-step targets: next forecast_horizon close values
+        for fh in 0..forecast_horizon {
+            let target = columns[close_idx].f64().unwrap().get(i + sequence_length + fh).unwrap_or(0.0);
+            target_data.push(target as f32);
+        }
     }
     let expected_len = n_sequences * sequence_length * n_features;
     println!(
@@ -195,7 +199,7 @@ pub fn dataframe_to_tensors<B: Backend>(
         );
     }
     let features_shape = Shape::new([n_sequences, sequence_length, n_features]);
-    let target_shape = Shape::new([n_sequences, 1]);
+    let target_shape = Shape::new([n_sequences, forecast_horizon]);
     let features_tensor: Tensor<B, 3> = Tensor::<B, 1>::from_floats(features_data.as_slice(), device)
         .reshape(features_shape);
     let target_tensor: Tensor<B, 2> = Tensor::<B, 1>::from_floats(target_data.as_slice(), device)
@@ -206,6 +210,7 @@ pub fn dataframe_to_tensors<B: Backend>(
 // Wrapper for dataframe_to_tensors for compatibility
 pub fn build_burn_lstm_model(
     df: DataFrame,
+    forecast_horizon: usize,
 ) -> anyhow::Result<(
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 3>,
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 2>,
@@ -213,6 +218,6 @@ pub fn build_burn_lstm_model(
     println!("DEBUG: Called build_burn_lstm_model");
     type BurnBackend = burn::backend::LibTorch<f32>;
     let device = <BurnBackend as burn::tensor::backend::Backend>::Device::default();
-    dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, &device)
+    dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, forecast_horizon, &device)
         .map_err(|e| anyhow::anyhow!(e.to_string()))
 }

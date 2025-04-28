@@ -14,6 +14,7 @@ pub struct ModelMetadata {
     pub timestamp: u64,
     pub input_size: usize,
     pub hidden_size: usize,
+    pub output_size: usize,
     pub num_layers: usize,
     pub bidirectional: bool,
     pub dropout: f64,
@@ -23,6 +24,7 @@ impl ModelMetadata {
     pub fn new(
         input_size: usize,
         hidden_size: usize,
+        output_size: usize,
         num_layers: usize,
         bidirectional: bool,
         dropout: f64,
@@ -35,6 +37,7 @@ impl ModelMetadata {
                 .as_secs(),
             input_size,
             hidden_size,
+            output_size,
             num_layers,
             bidirectional,
             dropout,
@@ -71,17 +74,25 @@ pub fn load_model_with_metadata<B: Backend>(
     path: impl AsRef<Path>,
     device: &B::Device,
 ) -> Result<(TimeSeriesLstm<B>, ModelMetadata)> {
-    // Load model
-    let model_path = path.as_ref().with_extension("bin");
-    let dummy_model = TimeSeriesLstm::new(12, 64, 1, 2, false, 0.2, device);
-    let model = dummy_model.load_file::<BinFileRecorder<FullPrecisionSettings>, _>(&model_path, &Default::default(), device)
-        .context("Failed to load model")?;
-    // Load metadata
+    // Load metadata first
     let metadata_path = path.as_ref().with_extension("meta.json");
     let metadata_json = std::fs::read_to_string(&metadata_path)
         .context("Failed to read metadata file")?;
     let metadata: ModelMetadata = serde_json::from_str(&metadata_json)
         .context("Failed to parse metadata")?;
+    // Now use metadata to construct dummy model
+    let model_path = path.as_ref().with_extension("bin");
+    let dummy_model = TimeSeriesLstm::new(
+        metadata.input_size,
+        metadata.hidden_size,
+        metadata.output_size,
+        metadata.num_layers,
+        metadata.bidirectional,
+        metadata.dropout,
+        device,
+    );
+    let model = dummy_model.load_file::<BinFileRecorder<FullPrecisionSettings>, _>(&model_path, &Default::default(), device)
+        .context("Failed to load model")?;
     Ok((model, metadata))
 }
 
@@ -135,6 +146,7 @@ mod tests {
     fn create_test_model(device: &NdArrayDevice) -> (TimeSeriesLstm<NdArray>, ModelMetadata) {
         let input_size = 12;
         let hidden_size = 64;
+        let output_size = 1;
         let num_layers = 2;
         let bidirectional = false;
         let dropout = 0.2;
@@ -142,7 +154,7 @@ mod tests {
         let model = TimeSeriesLstm::new(
             input_size,
             hidden_size,
-            1,  // output_size
+            output_size,
             num_layers,
             bidirectional,
             dropout,
@@ -152,6 +164,7 @@ mod tests {
         let metadata = ModelMetadata::new(
             input_size,
             hidden_size,
+            output_size,
             num_layers,
             bidirectional,
             dropout,
@@ -198,6 +211,7 @@ mod tests {
         // Verify metadata consistency
         assert_eq!(loaded_metadata.input_size, metadata.input_size);
         assert_eq!(loaded_metadata.hidden_size, metadata.hidden_size);
+        assert_eq!(loaded_metadata.output_size, metadata.output_size);
         assert_eq!(loaded_metadata.num_layers, metadata.num_layers);
         assert_eq!(loaded_metadata.bidirectional, metadata.bidirectional);
         assert!((loaded_metadata.dropout - metadata.dropout).abs() < f32::EPSILON.into());

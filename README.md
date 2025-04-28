@@ -292,3 +292,8 @@ ToDO:
 Two ways of improving speed. Have to decide which path to take!!!
 A. Rolling window buffer (fast, easy, works with current model)
 B. True batch/multi-step prediction (requires model changes, fastest, best for production)
+
+simple multi-output (direct multi-step) prediction, 
+or do you want a sequence-to-sequence (autoregressive) approach
+
+let input_df = df.slice(n_rows as i64 - (sequence_length as i64 + 1), (sequence_length + 1) as usize);
