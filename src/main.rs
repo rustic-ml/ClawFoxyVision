@@ -162,9 +162,10 @@ fn generate_predictions(df: DataFrame) -> Result<(), PolarsError> {
             &device,
         );
 
-    // Generate 5-day forecast
-    println!("Generating 5-day forecast...");
-    let forecast_horizon = 5;
+    // Generate per-minute forecast for a full trading day (390 minutes)
+    let minutes_per_day = 390; // US stock market: 6.5 hours * 60 minutes
+    println!("Generating per-minute forecast for a full trading day ({} minutes)...", minutes_per_day);
+    let forecast_horizon = minutes_per_day;
     let predictions =
         step_5_prediction::generate_forecast(&model, df.clone(), forecast_horizon, &device)
             .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
@@ -173,10 +174,17 @@ fn generate_predictions(df: DataFrame) -> Result<(), PolarsError> {
     let denormalized = step_5_prediction::denormalize_predictions(predictions, &df, "close")
         .map_err(|e| PolarsError::ComputeError(format!("Denormalization error: {}", e).into()))?;
 
-    // Print predictions
-    println!("Predictions for the next {} days:", forecast_horizon);
+    // Print per-minute predictions with timestamps starting from 09:30
+    println!("Per-minute predictions for the next trading day:");
+    let mut hour = 9;
+    let mut minute = 30;
     for (i, pred) in denormalized.iter().enumerate() {
-        println!("Day {}: ${:.2}", i + 1, pred);
+        println!("{:02}:{:02} - Minute {}: ${:.2}", hour, minute, i + 1, pred);
+        minute += 1;
+        if minute == 60 {
+            minute = 0;
+            hour += 1;
+        }
     }
 
     Ok(())

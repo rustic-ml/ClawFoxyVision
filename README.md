@@ -97,7 +97,8 @@ cargo build
 3. Run the project:
 ```bash
 cargo run -- [TICKER] [MODEL_TYPE]
-# Example: cargo run -- AAPL lstm
+# Example1: cargo run -- AAPL lstm
+# Example2: cargo run --release -- AAPL LSTM (for faster execution.)
 ```
 
 ---
@@ -284,3 +285,10 @@ No CUDA-related flags (e.g., TORCH_CUDA=OFF).
 
 
 Step 7: Configure Environment
+
+
+
+ToDO:
+Two ways of improving speed. Have to decide which path to take!!!
+A. Rolling window buffer (fast, easy, works with current model)
+B. True batch/multi-step prediction (requires model changes, fastest, best for production)
