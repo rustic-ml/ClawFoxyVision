@@ -26,7 +26,7 @@ pub fn load_and_preprocess(full_path: &PathBuf) -> Result<DataFrame, Box<dyn Err
 
     let file = std::fs::File::open(&full_path)?;
     // Compute cutoff from one year ago and filter rows by 'time'
-    let one_year_ago = Utc::now() - Duration::days(90);
+    let one_year_ago = Utc::now() - Duration::days(150);
     let cutoff_str = one_year_ago.format("%Y-%m-%d %H:%M:%S UTC").to_string();
     use polars::prelude::{col, lit};
     // Read CSV lazily, filter by 'time' > cutoff, then collect
@@ -77,56 +77,3 @@ pub fn prepare_lstm_data(
 
     Ok(df)
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_load_and_preprocess() {
-//         let workspace_dir = std::env::current_dir().expect("Failed to get current directory");
-//         let full_path = workspace_dir.join("AAPL-ticker_minute_bars.csv");
-
-//         let result = load_and_preprocess(&full_path);
-//         assert!(result.is_ok());
-//         let df = result.unwrap();
-
-//         // Verify required columns exist
-//         let required_columns = ["open", "high", "low", "close", "volume"];
-//         for column in required_columns {
-//             assert!(df.column(column).is_ok(), "Column {} was not found", column);
-//         }
-//     }
-
-//     #[test]
-//     fn test_prepare_lstm_data() {
-//         let workspace_dir = std::env::current_dir().expect("Failed to get current directory");
-//         let full_path = workspace_dir.join("AAPL-ticker_minute_bars.csv");
-
-//         let result = prepare_lstm_data(&full_path, 10);
-//         assert!(result.is_ok());
-//         let df = result.unwrap();
-
-//         // Verify technical indicators were added
-//         let technical_indicators = [
-//             "sma_20",
-//             "sma_50",
-//             "ema_20",
-//             "rsi_14",
-//             "macd",
-//             "macd_signal",
-//             "bb_middle",
-//             "bb_upper",
-//             "bb_lower",
-//             "returns",
-//         ];
-
-//         for indicator in technical_indicators {
-//             assert!(
-//                 df.column(indicator).is_ok(),
-//                 "Indicator {} was not found",
-//                 indicator
-//             );
-//         }
-//     }
-// }

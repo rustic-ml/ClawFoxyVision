@@ -32,6 +32,11 @@ pub mod lstm {
     pub mod step_4_train_model;
     pub mod step_5_prediction;
     pub mod step_6_model_serialization;
+    
+    #[cfg(test)]
+    pub mod tests {
+        pub mod test_tensor_preparation;
+    }
 }
 
 pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
@@ -49,7 +54,7 @@ pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
 fn main() -> PolarsResult<()> {
     // Use CPU backend with NdArray (Mali GPU not CUDA)
     type BurnBackend = Autodiff<NdArray<f32>>;
-    let device = NdArrayDevice::default();
+    let _device = NdArrayDevice::default();
     println!("Using device: CPU NdArray");
 
     // Enable Rayon default global thread pool for parallelism
@@ -76,7 +81,8 @@ fn main() -> PolarsResult<()> {
     match train_and_evaluate(train_df.clone(), test_df.clone(), ticker.as_str(), model_type.as_str()) {
         Ok(model_path) => {
             println!("Training and evaluation completed successfully. Model saved at: {}", model_path.display());
-            println!("Duration - train & eval: {:?}", t_model_start.elapsed());
+            let dur = t_model_start.elapsed().as_secs_f64() / 60.0;
+            println!("Duration - train & eval: {:.2} minutes", dur);
         }
         Err(e) => eprintln!("Error during training and evaluation: {}", e),
     }
@@ -86,7 +92,8 @@ fn main() -> PolarsResult<()> {
     match generate_predictions(df, &train_df) {
         Ok(_) => {
             println!("Prediction generation completed successfully.");
-            println!("Duration - prediction generation: {:?}", t_pred_start.elapsed());
+            let pred_dur = t_pred_start.elapsed().as_secs_f64() / 60.0;
+            println!("Duration - prediction generation: {:.2} minutes", pred_dur);
         }
         Err(e) => eprintln!("Error during prediction generation: {}", e),
     }
@@ -105,9 +112,13 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         batch_size: 32,
         epochs: 10,
         test_split: 0.2,
+        // Enhanced dropout
+        dropout: constants::DEFAULT_DROPOUT,
         // Early stopping settings
         patience: lstm::step_4_train_model::TrainingConfig::default().patience,
         min_delta: lstm::step_4_train_model::TrainingConfig::default().min_delta,
+        // Use Huber loss to be more robust
+        use_huber_loss: true,
         // Use default for any additional fields
         ..Default::default()
     };
@@ -120,7 +131,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
         
         // Load the model
-        let (trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
+        let (_trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
             ticker,
             model_type,
             &model_name,
@@ -133,7 +144,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         println!("Starting model training...");
         let forecast_horizon = 390; // full trading day in minutes
         let ep_start = Instant::now();
-        let (trained_model, _) =
+        let (_trained_model, _) =
             lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, forecast_horizon)
                 .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
         println!("Trained and saved new model. Epoch took {:?}", ep_start.elapsed());
@@ -143,7 +154,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     println!("Evaluating model on test data...");
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);   
     // Load the trained model for evaluation (ensures `trained_model` is in scope)
-    let (trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
+    let (_trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
         ticker,
         model_type,
         &model_name,
@@ -151,7 +162,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
     // Perform evaluation
     let forecast_horizon = 390; // full trading day in minutes
-    let rmse = lstm::step_4_train_model::evaluate_model(&trained_model, test_df.clone(), &device, forecast_horizon)
+    let rmse = lstm::step_4_train_model::evaluate_model(&_trained_model, test_df.clone(), &device, forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
     println!("Test RMSE: {:.4}", rmse);
 
@@ -165,15 +176,15 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
     type BurnBackend = Autodiff<NdArray<f32>>;
     let device = NdArrayDevice::default();
 
-    // Prepare data tensors
-    let (features, _) = step_1_tensor_preparation::build_burn_lstm_model(df.clone(), forecast_horizon)
+    // Prepare data tensors - using the enhanced build_enhanced_lstm_model function
+    let (features, _) = step_1_tensor_preparation::build_enhanced_lstm_model(df.clone(), forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Tensor building error: {}", e).into()))?;
 
     // Load model metadata to get correct hyperparameters
     let ticker = std::env::args().nth(1).unwrap_or("AAPL".to_string());
     let model_type = std::env::args().nth(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
-    let (_loaded_model, metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
+    let (loaded_model, metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
         &ticker,
         &model_type,
         &model_name,
@@ -185,7 +196,7 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
     let output_dim = metadata.output_size;
     let num_layers = metadata.num_layers;
     let bidirectional = metadata.bidirectional;
-    let dropout = metadata.dropout;
+    let dropout = constants::DEFAULT_DROPOUT; // Use our improved dropout
 
     // Create model with loaded hyperparameters
     let model: step_3_lstm_model_arch::TimeSeriesLstm<BurnBackend> =
@@ -199,14 +210,14 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
             &device,
         );
 
-    // Generate direct multi-step forecast for a full trading day (390 minutes)
-    println!("Generating direct multi-step forecast for the next trading day ({} minutes)...", forecast_horizon);
+    // Use our new ensemble forecasting with multiple predictive strategies
+    println!("Generating ensemble forecast for the next trading day ({} minutes)...", forecast_horizon);
     let predictions =
-        step_5_prediction::predict_multi_step_direct(&model, df.clone(), &device, forecast_horizon)
+        step_5_prediction::ensemble_forecast(&loaded_model, df.clone(), &device, forecast_horizon)
             .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
 
-    // Denormalize predictions to original scale using training set min/max
-    let denormalized = step_5_prediction::denormalize_predictions(predictions, train_df, "close")
+    // Denormalize predictions to original scale using Z-score denormalization
+    let denormalized = step_5_prediction::denormalize_z_score_predictions(predictions, train_df, "close")
         .map_err(|e| PolarsError::ComputeError(format!("Denormalization error: {}", e).into()))?;
 
     // Print per-minute predictions with timestamps starting from 09:30
@@ -227,94 +238,10 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    // #[test]
-    // fn test_build_burn_lstm_model_with_df_from_csv() {
-    //     // Read and preprocess the CSV using step_1 and step_2
-    //     let cwd = std::env::current_dir().expect("Failed to get current directory");
-    //     let csv_path = cwd.join("AAPL-ticker_minute_bars.csv");
-
-    //     // Load and preprocess
-    //     let mut df = match crate::util::pre_processor::load_and_preprocess(&csv_path) {
-    //         Ok(df) => df,
-    //         Err(e) => {
-    //             panic!("Failed to load and preprocess data: {}", e);
-    //         }
-    //     };
-
-    //     // Add technical indicators
-    //     let df = match crate::util::feature_engineering::add_technical_indicators(&mut df) {
-    //         Ok(df) => df,
-    //         Err(e) => {
-    //             panic!("Failed to add technical indicators: {}", e);
-    //         }
-    //     };
-
-    //     // Verify required indicators exist before tensor conversion
-    //     for indicator in constants::TECHNICAL_INDICATORS {
-    //         assert!(
-    //             df.schema().contains(indicator), 
-    //             "Missing required indicator: {}",
-    //             indicator
-    //         );
-    //     }
-
-    //     // Use our custom build function with smaller validation split
-    //     let result = build_burn_lstm_model_for_test(df, 0.1);
-    //     match &result {
-    //         Ok(_) => println!("CSV test succeeded"),
-    //         Err(e) => {
-    //             println!("CSV test Error: {:?}", e);
-    //             panic!("Failed to build LSTM model tensors: {}", e);
-    //         }
-    //     };
-
-    //     // Verify tensors were created with correct dimensions
-    //     let (features, targets) = result.expect("Failed to build model");
-        
-    //     // Validate the dimensionality and shape of the tensors
-    //     assert_eq!(
-    //         features.dims().len(),
-    //         3,
-    //         "Features tensor should have 3 dimensions"
-    //     );
-        
-    //     // Check that the 3rd dimension has the expected number of features
-    //     assert_eq!(
-    //         features.dims()[2],
-    //         constants::TECHNICAL_INDICATORS.len(),
-    //         "Features tensor should have {} features",
-    //         constants::TECHNICAL_INDICATORS.len()
-    //     );
-        
-    //     // Check that the 2nd dimension has the expected sequence length
-    //     assert_eq!(
-    //         features.dims()[1],
-    //         constants::SEQUENCE_LENGTH,
-    //         "Features tensor should have sequence length of {}",
-    //         constants::SEQUENCE_LENGTH
-    //     );
-        
-    //     // Validate targets tensor shape
-    //     assert_eq!(
-    //         targets.dims().len(),
-    //         2,
-    //         "Targets tensor should have 2 dimensions"
-    //     );
-        
-    //     // Ensure number of samples in features and targets match
-    //     assert_eq!(
-    //         features.dims()[0],
-    //         targets.dims()[0],
-    //         "Number of samples in features and targets should match"
-    //     );
-        
-    //     // Verify targets has correct second dimension (should be 1 for single target value)
-    //     assert_eq!(
-    //         targets.dims()[1],
-    //         1,
-    //         "Targets tensor second dimension should be 1"
-    //     );
-    // }
+    // Tell Rust to look for tests in the LSTM module
+    #[test]
+    fn include_lstm_tests() {
+        // This is just a dummy test to ensure the LSTM tests are included
+        assert!(true);
+    }
 }

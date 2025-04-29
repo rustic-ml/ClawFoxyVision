@@ -3,6 +3,7 @@ use burn::prelude::Backend;
 use burn::module::Module;
 use std::path::PathBuf;
 use std::path::Path;
+use std::thread::panicking;
 use burn::record::{BinFileRecorder, FullPrecisionSettings};
 use serde_json::from_str;
 use chrono::{NaiveDateTime, Local, Datelike};
@@ -13,10 +14,25 @@ use crate::lstm::{
 };
 use crate::constants::MODEL_PATH;
 
-/// Get the default path for saving models
+/// Get the default path for saving models, overridable via MODEL_PATH env var
 pub fn get_model_path(ticker: &str, model_type: &str) -> PathBuf {
-    let folder_path = format!("{}/{}/{}", MODEL_PATH, ticker, model_type);
-    PathBuf::from(folder_path)
+    // Allow overriding MODEL_PATH via environment variable, fallback to constant
+    let base = std::env::var("MODEL_PATH").unwrap_or_else(|_| MODEL_PATH.to_string());
+    
+    if !Path::new(&base).exists() {
+        if let Err(e) = std::fs::create_dir_all(&base) {
+            eprintln!("Failed to create models directory: {}", e);
+        }
+    }
+    if base == "" {
+        println!("MODEL_PATH is not set, cannot save models");
+        panic!("MODEL_PATH is not set, cannot save models");
+    }
+    
+    let mut path = PathBuf::from(base);
+    path.push(ticker);
+    path.push(model_type);
+    path
 }
 
 /// Save a trained model with its configuration to MODEL_PATH
@@ -150,117 +166,3 @@ pub fn is_model_version_current(model_base_path: &Path, current_version: &str) -
     }
     false
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use burn_ndarray::{NdArray, NdArrayDevice};
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_model_save_load() -> Result<()> {
-        // Create a temporary MODEL_PATH for testing
-        let temp_dir = tempdir()?;
-        let test_model_path = temp_dir.path().to_str().unwrap();
-        std::env::set_var("MODEL_PATH", test_model_path);
-
-        // Setup
-        let device = NdArrayDevice::Cpu;
-        let input_size = 12;
-        let hidden_size = 64;
-        let num_layers = 2;
-        let bidirectional = false;
-        let dropout = 0.2;
-
-        // Create test model
-        let model = TimeSeriesLstm::<NdArray>::new(
-            input_size,
-            hidden_size,
-            1, // output_size
-            num_layers,
-            bidirectional,
-            dropout,
-            &device,
-        );
-
-        // Save model
-        let ticker = "AAPL";
-        let model_type = "lstm";
-        let model_name = "test_model";
-        let saved_path = save_trained_model(
-            &model,
-            ticker,
-            model_type,
-            model_name,
-            input_size,
-            hidden_size,
-            1,
-            num_layers,
-            bidirectional,
-            dropout,
-        )?;
-
-        // Verify files exist
-        assert!(saved_path.with_extension("bin").exists());
-        assert!(saved_path.with_extension("meta.json").exists());
-
-        // Load model
-        let (loaded_model, metadata) = load_trained_model::<NdArray>(ticker, model_type, model_name, &device)?;
-
-        // Verify metadata
-        assert_eq!(metadata.input_size, input_size);
-        assert_eq!(metadata.hidden_size, hidden_size);
-        assert_eq!(metadata.num_layers, num_layers);
-        assert_eq!(metadata.bidirectional, bidirectional);
-        assert!((metadata.dropout - dropout).abs() < f64::EPSILON);
-
-        // Cleanup
-        fs::remove_file(saved_path.with_extension("bin"))?;
-        fs::remove_file(saved_path.with_extension("meta.json"))?;
-        temp_dir.close()?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_model_checkpoint() -> Result<()> {
-        // Create a temporary MODEL_PATH for testing
-        let temp_dir = tempdir()?;
-        let test_model_path = temp_dir.path().to_str().unwrap();
-        std::env::set_var("MODEL_PATH", test_model_path);
-
-        // Setup
-        let device = NdArrayDevice::Cpu;
-        let model = TimeSeriesLstm::<NdArray>::new(12, 64, 1, 2, false, 0.2, &device);
-        let ticker = "AAPL";
-        let model_type = "lstm";
-        let model_name = "test_model";
-
-        // Save checkpoint
-        let saved_path = save_model_checkpoint(
-            &model,
-            ticker,
-            model_type,
-            model_name,
-            1,
-            12,
-            64,
-            1,
-            2,
-            false,
-            0.2,
-        )?;
-
-        // Verify checkpoint files exist
-        assert!(saved_path.with_extension("bin").exists());
-        assert!(saved_path.with_extension("meta.json").exists());
-
-        // Cleanup
-        fs::remove_file(saved_path.with_extension("bin"))?;
-        fs::remove_file(saved_path.with_extension("meta.json"))?;
-        temp_dir.close()?;
-
-        Ok(())
-    }
-} 

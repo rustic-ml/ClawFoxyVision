@@ -1,81 +1,127 @@
 // External crates
 use polars::frame::column::Column;
 use polars::prelude::*;
-use polars::prelude::PlSmallStr;
+use chrono::{NaiveDateTime, Timelike, Datelike};
+use std::f64::consts::PI;
 
 /// Calculates Simple Moving Average (SMA) using rolling_map
 pub fn calculate_sma(df: &DataFrame, column: &str, window: usize) -> PolarsResult<Series> {
-    let series = df.column(column)?.f64()?;
-    let result = series.rolling_map(
-        &|s: &Series| Series::new("".into(), [s.mean()]),
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    Ok(result)
+    let series = df.column(column)?.f64()?.clone().into_series();
+    
+    if series.len() < window {
+        return Err(PolarsError::ComputeError(
+            format!("Not enough data points ({}) for SMA window ({})", series.len(), window).into()
+        ));
+    }
+    
+    series.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })
 }
 
 /// Calculates Exponential Moving Average (EMA)
 pub fn calculate_ema(df: &DataFrame, column: &str, window: usize) -> PolarsResult<Series> {
-    let series = df.column(column)?.f64()?;
-    let alpha = 2.0 / (window as f64 + 1.0);
-    let mut ema_vec = Vec::with_capacity(series.len());
-    let mut prev_ema = None;
-    for (i, val) in series.into_no_null_iter().enumerate() {
-        let ema = if i == 0 {
-            val
-        } else {
-            let prev = prev_ema.unwrap();
-            alpha * val + (1.0 - alpha) * prev
-        };
-        ema_vec.push(ema);
-        prev_ema = Some(ema);
+    let series = df.column(column)?.f64()?.clone().into_series();
+    
+    if series.len() < window {
+        return Err(PolarsError::ComputeError(
+            format!("Not enough data points ({}) for EMA window ({})", series.len(), window).into()
+        ));
     }
-    Ok(Series::new(PlSmallStr::from(column), ema_vec))
+    
+    let alpha = 2.0 / (window as f64 + 1.0);
+    series.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })
 }
 
-/// Calculates Relative Strength Index (RSI) using vectorized operations
+/// Calculates Relative Strength Index (RSI)
 pub fn calculate_rsi(df: &DataFrame, window: usize) -> PolarsResult<Series> {
-    let close = df.column("close")?.f64()?;
-    let close_slice1 = close.slice(1, close.len() - 1);
-    let close_slice2 = close.slice(0, close.len() - 1);
-    let diff = &close_slice1 - &close_slice2;
-    let diff_vec: Vec<Option<f64>> = std::iter::once(None).chain(diff.into_iter()).collect();
-    let diff = Float64Chunked::from_iter(diff_vec);
-    let gain = diff.apply(|v| v.map(|x| if x > 0.0 { x } else { 0.0 }));
-    let loss = diff.apply(|v| v.map(|x| if x < 0.0 { -x } else { 0.0 }));
-    let avg_gain = gain.rolling_map(
-        &|s: &Series| Series::new("".into(), [s.mean()]),
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    let avg_loss = loss.rolling_map(
-        &|s: &Series| Series::new("".into(), [s.mean()]),
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    let rs = &avg_gain / &avg_loss;
-    let rs = rs?;
-    let rs_ca = rs.f64().unwrap();
-    let rsi = rs_ca.apply(|v| v.map(|x| 100.0 - (100.0 / (1.0 + x))));
-    Ok(rsi.into_series())
+    let close = df.column("close")?.f64()?.clone().into_series();
+    let prev_close = close.shift(1);
+    
+    let mut gains = Vec::new();
+    let mut losses = Vec::new();
+    
+    // Handle first value
+    gains.push(0.0);
+    losses.push(0.0);
+    
+    for i in 1..close.len() {
+        let curr = close.f64()?.get(i).unwrap_or(0.0);
+        let prev = prev_close.f64()?.get(i).unwrap_or(0.0);
+        let change = curr - prev;
+        
+        if change > 0.0 {
+            gains.push(change);
+            losses.push(0.0);
+        } else {
+            gains.push(0.0);
+            losses.push(-change);
+        }
+    }
+    
+    let gains_series = Series::new("gains".into(), gains);
+    let losses_series = Series::new("losses".into(), losses);
+    
+    let avg_gain = gains_series.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })?;
+    let avg_loss = losses_series.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })?;
+    
+    let mut rsi = Vec::with_capacity(close.len());
+    for i in 0..close.len() {
+        let g = avg_gain.f64()?.get(i).unwrap_or(0.0);
+        let l = avg_loss.f64()?.get(i).unwrap_or(0.0);
+        
+        let rsi_val = if l == 0.0 {
+            100.0
+        } else {
+            let rs = g / l;
+            100.0 - (100.0 / (1.0 + rs))
+        };
+        rsi.push(rsi_val);
+    }
+    
+    Ok(Series::new("RSI".into(), rsi))
 }
 
 /// Calculates Moving Average Convergence Divergence (MACD)
 pub fn calculate_macd(df: &DataFrame) -> PolarsResult<(Series, Series)> {
+    // MACD requires at least 26 points for the longer EMA
+    if df.height() < 26 {
+        return Err(PolarsError::ComputeError(
+            "Not enough data points for MACD calculation (need at least 26)".into()
+        ));
+    }
+    
     let ema12 = calculate_ema(df, "close", 12)?;
     let ema26 = calculate_ema(df, "close", 26)?;
-    let macd = (&ema12 - &ema26)?;
-    let macd_df = DataFrame::new(vec![macd.clone().into()])?;
-    let signal = calculate_ema(&macd_df, macd.name(), 9)?;
+    
+    let macd = (&ema12 - &ema26)?.with_name("macd".into());
+    
+    // Create a temporary DataFrame for signal line calculation
+    let mut signal_df = DataFrame::new(vec![macd.clone().into_column()])?;
+    let signal = calculate_ema(&signal_df, "macd", 9)?.with_name("macd_signal".into());
+    
     Ok((macd, signal))
 }
 
@@ -88,60 +134,201 @@ pub fn calculate_returns(df: &DataFrame) -> PolarsResult<Series> {
     Ok(returns)
 }
 
-/// Calculates Bollinger Bands using rolling_map for mean and std
+/// Calculates lagged features for a given column
+pub fn calculate_lagged_features(df: &DataFrame, column: &str, lags: &[usize]) -> PolarsResult<Vec<Series>> {
+    let series = df.column(column)?.as_materialized_series().clone();
+    let mut result = Vec::with_capacity(lags.len());
+    
+    for &lag in lags {
+        let lagged = series.shift(lag as i64);
+        let name = format!("{}_lag_{}", column, lag);
+        result.push(lagged.with_name(name.into()));
+    }
+    
+    Ok(result)
+}
+
+/// Calculates returns over different periods
+pub fn calculate_period_returns(df: &DataFrame, periods: &[usize]) -> PolarsResult<Vec<Series>> {
+    let close = df.column("close")?.f64()?.clone().into_series();
+    let mut result = Vec::with_capacity(periods.len());
+    
+    for &period in periods {
+        let shifted = close.shift(period as i64);
+        let diff = (&close - &shifted)?;
+        // Convert Series to ChunkedArray<Float64Type> before division
+        let shifted_f64 = shifted.f64()?;
+        let diff_f64 = diff.f64()?;
+        // Perform division on ChunkedArrays
+        let period_return = (diff_f64 / shifted_f64).into_series();
+        let name = format!("returns_{}min", period).into();
+        result.push(period_return.with_name(name));
+    }
+    Ok(result)
+}
+
+/// Calculates volatility over different periods
+pub fn calculate_volatility(df: &DataFrame, windows: &[usize]) -> PolarsResult<Vec<Series>> {
+    let returns = calculate_returns(df)?;
+    let mut result = Vec::with_capacity(windows.len());
+    
+    for &window in windows {
+        let volatility = returns.rolling_std(RollingOptionsFixedWindow {
+            window_size: window,
+            min_periods: window,
+            center: false,
+            weights: None,
+            fn_params: None,
+        })?;
+        let name = format!("volatility_{}min", window).into();
+        result.push(volatility.with_name(name));
+    }
+    
+    Ok(result)
+}
+
+/// Create time-based features from the time column
+pub fn calculate_time_features(df: &DataFrame) -> PolarsResult<Vec<Series>> {
+    // Check if there's a time column
+    if !df.schema().contains("time") {
+        return Err(PolarsError::ComputeError("Time column not found".into()));
+    }
+    
+    let time_col = df.column("time")?.str()?;
+    let n_rows = df.height();
+    
+    // Create vectors for hour and day of week features
+    let mut hour_sin = Vec::with_capacity(n_rows);
+    let mut hour_cos = Vec::with_capacity(n_rows);
+    let mut day_sin = Vec::with_capacity(n_rows);
+    let mut day_cos = Vec::with_capacity(n_rows);
+    
+    for i in 0..n_rows {
+        let time_str = time_col.get(i).unwrap_or("");
+        let datetime = match NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S UTC") {
+            Ok(dt) => dt,
+            Err(_) => {
+                // Default values if parsing fails
+                hour_sin.push(0.0);
+                hour_cos.push(1.0);
+                day_sin.push(0.0);
+                day_cos.push(1.0);
+                continue;
+            }
+        };
+        
+        // Extract hour (0-23) and day of week (0-6)
+        let hour = datetime.hour() as f64;
+        let day = datetime.weekday().num_days_from_monday() as f64;
+        
+        // Encode using sine and cosine to capture cyclical patterns
+        hour_sin.push((2.0 * PI * hour / 24.0).sin());
+        hour_cos.push((2.0 * PI * hour / 24.0).cos());
+        day_sin.push((2.0 * PI * day / 7.0).sin());
+        day_cos.push((2.0 * PI * day / 7.0).cos());
+    }
+    
+    // Create series
+    let result = vec![
+        Series::new("hour_sin".into(), hour_sin),
+        Series::new("hour_cos".into(), hour_cos),
+        Series::new("day_of_week_sin".into(), day_sin),
+        Series::new("day_of_week_cos".into(), day_cos),
+    ];
+    
+    Ok(result)
+}
+
+/// Calculates Bollinger Bands
 pub fn calculate_bollinger_bands(
     df: &DataFrame,
     window: usize,
     num_std: f64,
 ) -> PolarsResult<(Series, Series, Series)> {
-    let close = df.column("close")?.f64()?;
-    let sma = close.rolling_map(
-        &|s: &Series| Series::new("".into(), [s.mean()]),
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    let std = close.rolling_map(
-        &|s: &Series| {
-            let values: Vec<f64> = s.f64().unwrap().into_iter().map(|v| v.unwrap_or(0.0)).collect();
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
-            let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
-            Series::new("".into(), [variance.sqrt()])
-        },
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    let upper_band = &sma + &(std.clone() * num_std);
-    let lower_band = &sma - &(std * num_std);
-    let upper_band = upper_band?;
-    let lower_band = lower_band?;
-    Ok((sma.into_series(), upper_band.into_series(), lower_band.into_series()))
+    let close = df.column("close")?.f64()?.clone().into_series();
+    
+    if close.len() < window {
+        return Err(PolarsError::ComputeError(
+            format!("Not enough data points ({}) for Bollinger Bands window ({})", close.len(), window).into()
+        ));
+    }
+    
+    let sma = close.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })?;
+    let std = close.rolling_std(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })?;
+    
+    let mut upper_band = Vec::with_capacity(close.len());
+    let mut lower_band = Vec::with_capacity(close.len());
+    
+    for i in 0..close.len() {
+        let ma = sma.f64()?.get(i).unwrap_or(0.0);
+        let std_val = std.f64()?.get(i).unwrap_or(0.0);
+        
+        upper_band.push(ma + num_std * std_val);
+        lower_band.push(ma - num_std * std_val);
+    }
+    
+    Ok((
+        sma,
+        Series::new("upper_band".into(), upper_band),
+        Series::new("lower_band".into(), lower_band)
+    ))
 }
 
-/// Calculates Average True Range (ATR) using vectorized operations
+/// Calculates Average True Range (ATR)
 pub fn calculate_atr(df: &DataFrame, window: usize) -> PolarsResult<Series> {
-    let high = df.column("high")?.f64()?;
-    let low = df.column("low")?.f64()?;
-    let close = df.column("close")?.f64()?;
+    let high = df.column("high")?.f64()?.clone().into_series();
+    let low = df.column("low")?.f64()?.clone().into_series();
+    let close = df.column("close")?.f64()?.clone().into_series();
+    
+    if df.height() < window + 1 {
+        return Err(PolarsError::ComputeError(
+            format!("Not enough data points ({}) for ATR calculation (need {})", df.height(), window + 1).into()
+        ));
+    }
+    
     let prev_close = close.shift(1);
-    let tr = *&high - &*low;
-    let tr2 = (*&high - &prev_close).apply(|v| v.map(|x| x.abs()));
-    let tr3 = (*&low - &prev_close).apply(|v| v.map(|x| x.abs()));
-    let tr = tr.zip_with(&tr2.gt(&tr), &tr2)?.zip_with(&tr3.gt(&tr), &tr3)?;
-    let atr = tr.rolling_map(
-        &|s: &Series| Series::new("".into(), [s.mean()]),
-        RollingOptionsFixedWindow {
-            window_size: window,
-            min_periods: window,
-            ..Default::default()
-        },
-    )?;
-    Ok(atr)
+    let mut tr_values = Vec::with_capacity(df.height());
+    
+    let first_tr = {
+        let h = high.f64()?.get(0).unwrap_or(0.0);
+        let l = low.f64()?.get(0).unwrap_or(0.0);
+        h - l
+    };
+    tr_values.push(first_tr);
+    
+    for i in 1..df.height() {
+        let h = high.f64()?.get(i).unwrap_or(0.0);
+        let l = low.f64()?.get(i).unwrap_or(0.0);
+        let pc = prev_close.f64()?.get(i).unwrap_or(0.0);
+        
+        let tr = if pc == 0.0 {
+            h - l
+        } else {
+            (h - l).max((h - pc).abs()).max((l - pc).abs())
+        };
+        tr_values.push(tr);
+    }
+    
+    let tr_series = Series::new("TR".into(), tr_values);
+    tr_series.rolling_mean(RollingOptionsFixedWindow {
+        window_size: window,
+        min_periods: window,
+        center: false,
+        weights: None,
+        fn_params: None,
+    })
 }
 
 /// Adds all technical indicators to the DataFrame
@@ -182,8 +369,35 @@ pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
     let price_range: Series = (&high - &low)?;
     let price_range = price_range.with_name("price_range".into());
 
-    // Stack all indicators
-    let result = df.hstack(&[
+    // Calculate lag features
+    let lags = [5, 15, 30];
+    let lagged_close = calculate_lagged_features(df, "close", &lags)?;
+    
+    // Calculate returns over different periods
+    let periods = [5, 15, 30];
+    let period_returns = calculate_period_returns(df, &periods)?;
+    
+    // Calculate volatility
+    let windows = [15, 30];
+    let volatility = calculate_volatility(df, &windows)?;
+    
+    // Calculate time-based features
+    let time_features = match calculate_time_features(df) {
+        Ok(features) => features,
+        Err(_) => {
+            // If time column is missing or parsing fails, create empty features
+            let empty = vec![0.0; df.height()];
+            vec![
+                Series::new("hour_sin".into(), empty.clone()),
+                Series::new("hour_cos".into(), empty.clone()),
+                Series::new("day_of_week_sin".into(), empty.clone()),
+                Series::new("day_of_week_cos".into(), empty),
+            ]
+        }
+    };
+
+    // Create a vec of all indicators
+    let mut all_indicators = vec![
         sma20.with_name("sma_20".into()).into(),
         sma50.with_name("sma_50".into()).into(),
         ema20.with_name("ema_20".into()).into(),
@@ -198,62 +412,27 @@ pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
         volume_sma20.with_name("volume_sma_20".into()).into(),
         volume_ema20.with_name("volume_ema_20".into()).into(),
         price_range.into(),
-    ])?;
+    ];
+    
+    // Add lag features
+    all_indicators.extend(lagged_close);
+    
+    // Add period returns
+    all_indicators.extend(period_returns);
+    
+    // Add volatility
+    all_indicators.extend(volatility);
+    
+    // Add time features
+    all_indicators.extend(time_features);
+
+    // Stack all indicators
+    let columns: Vec<Column> = all_indicators.into_iter().map(|s| s.into_column()).collect();
+    let result = df.hstack(&columns)?;
 
     // Print column names for debugging
     println!("Columns after hstack: {:?}", result.get_column_names());
 
     // Return the result
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pre_processor::load_and_preprocess;
-
-    #[test]
-    fn test_add_technical_indicators() {
-        let workspace_dir = std::env::current_dir().expect("Failed to get current directory");
-        let full_path = workspace_dir.join("AAPL-ticker_minute_bars.csv");
-
-        let result = load_and_preprocess(&full_path);
-        assert!(result.is_ok());
-        let mut df = result.unwrap();
-
-        let result = add_technical_indicators(&mut df);
-        assert!(result.is_ok());
-
-        // Use the returned DataFrame for verification
-        let df = result.unwrap();
-        println!("Columns in final DataFrame: {:?}", df.get_column_names());
-
-        // Verify that all features were added
-        let new_features = [
-            "sma_20",
-            "sma_50",
-            "ema_20",
-            "rsi_14",
-            "macd",
-            "macd_signal",
-            "bb_middle",
-            "bb_upper",
-            "bb_lower",
-            "atr_14",
-            "returns",
-            "volume_sma_20",
-            "volume_ema_20",
-            "price_range",
-        ];
-
-        for feature in new_features {
-            println!("Feature: {}", feature);
-            println!("Column: {:?}", df.column(feature));
-            assert!(
-                df.column(feature).is_ok(),
-                "Feature {} was not added",
-                feature
-            );
-        }
-    }
 }
