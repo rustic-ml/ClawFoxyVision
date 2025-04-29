@@ -10,13 +10,11 @@ use super::step_3_lstm_model_arch::TimeSeriesLstm;
 
 /// Single-step prediction from the model - simplified version for compile-time compatibility
 pub fn predict_next_step<B: Backend>(
-    _model: &TimeSeriesLstm<B>,
+    model: &TimeSeriesLstm<B>,
     df: DataFrame,
-    _device: &B::Device,
+    device: &B::Device,
 ) -> Result<f64> {
-    // We'll just return a placeholder value to make it compile
-    // In a real implementation, we would use model.forward() and properly convert the tensor
-    // Check if DataFrame has required columns first
+    // Validate required columns
     if !df.is_empty() {
         for col in TECHNICAL_INDICATORS {
             if !df.schema().contains(col) {
@@ -24,14 +22,24 @@ pub fn predict_next_step<B: Backend>(
             }
         }
     }
-    
-    // Skip tensor creation for empty dataframes in tests
-    if !df.is_empty() {
-        let _ = step_1_tensor_preparation::build_burn_lstm_model(df, 1)?;
-    }
-
-    // Return a placeholder value
-    Ok(0.0)
+    // Build sequences tensor with horizon 1
+    let (features, _) = step_1_tensor_preparation::dataframe_to_tensors::<B>(
+        &df,
+        crate::constants::SEQUENCE_LENGTH,
+        1,
+        device,
+    )
+    .context("Tensor creation failed for prediction")?;
+    // Extract the last sequence
+    let seq_count = features.dims()[0];
+    let seq = features.clone().narrow(0, seq_count - 1, 1);
+    // Forward pass for single-step prediction
+    let pred_tensor = model.forward(seq);
+    // Extract scalar prediction
+    let data = pred_tensor.to_data().convert::<f32>();
+    let slice = data.as_slice::<f32>().unwrap();
+    let value = slice[0];
+    Ok(value as f64)
 }
 
 /// Generate multiple future predictions using autoregressive forecasting
@@ -123,39 +131,49 @@ pub fn denormalize_predictions(
 }
 
 /// Direct multi-step (multi-output) prediction: returns all future steps at once
-pub fn predict_multi_step_direct(
-    model: &TimeSeriesLstm<burn::backend::LibTorch<f32>>,
+pub fn predict_multi_step_direct<B: Backend>(
+    model: &TimeSeriesLstm<B>,
     df: DataFrame,
-    device: &<burn::backend::LibTorch<f32> as burn::tensor::backend::Backend>::Device,
+    device: &B::Device,
     forecast_horizon: usize,
 ) -> Result<Vec<f64>> {
-    // Prepare the most recent sequence as input
-    let sequence_length = crate::constants::SEQUENCE_LENGTH;
-    let n_rows = df.height();
-    if n_rows < sequence_length {
-        return Err(anyhow::anyhow!("Not enough rows in DataFrame for input sequence"));
+    // Direct multi-step: build features from last SEQUENCE_LENGTH rows
+    let seq_len = crate::constants::SEQUENCE_LENGTH;
+    // Select only technical indicators and drop nulls
+    let mut df_sel = df.select(crate::constants::TECHNICAL_INDICATORS)?;
+    df_sel = df_sel.drop_nulls::<String>(None)?;
+    // Compute available rows after drop
+    let n_rows_sel = df_sel.height();
+    if n_rows_sel < seq_len {
+        return Err(anyhow::anyhow!(format!(
+            "DataFrame has too few rows ({}) for sequence_length ({})",
+            n_rows_sel, seq_len
+        )));
     }
-    let mut input_df = df.slice(n_rows as i64 - (sequence_length as i64 + 1), (sequence_length + 1) as usize);
-    // Ensure columns match training (order and count)
-    input_df = input_df.select(crate::constants::TECHNICAL_INDICATORS)?;
-    // Build input tensor (features only, shape [1, sequence_length, n_features])
-    let (features, _) = super::step_1_tensor_preparation::build_burn_lstm_model(input_df, 1)?;
-    println!("features shape: {:?}", features.dims());
-    println!("DEBUG: model.input_size = {}, features shape = {:?}", model.input_size(), features.dims());
-    // features: [1, sequence_length, n_features]
+    let n_features = crate::constants::TECHNICAL_INDICATORS.len();
+    // Extract the last seq_len rows
+    let start = n_rows_sel - seq_len;
+    // Build feature buffer [1, seq_len, n_features]
+    let mut buf = Vec::with_capacity(seq_len * n_features);
+    for row in start..n_rows_sel {
+        for &col in crate::constants::TECHNICAL_INDICATORS.iter() {
+            let val = df_sel
+                .column(col)?
+                .f64()?
+                .get(row as usize)
+                .unwrap_or(0.0) as f32;
+            buf.push(val);
+        }
+    }
+    // Create tensor and forward
+    let shape = burn::tensor::Shape::new([1, seq_len, n_features]);
+    let features = burn::tensor::Tensor::<B, 1>::from_floats(buf.as_slice(), device)
+        .reshape(shape);
     let output = model.forward(features); // [1, forecast_horizon]
-    let output_data = output.to_data();
-    let output_vec: Vec<f64> = output_data
-        .convert::<f32>()
-        .as_slice::<f32>()
-        .unwrap()
-        .iter()
-        .map(|&v| v as f64)
-        .collect();
-    if output_vec.len() != forecast_horizon {
-        return Err(anyhow::anyhow!(format!("Model output length {} does not match forecast_horizon {}", output_vec.len(), forecast_horizon)));
-    }
-    Ok(output_vec)
+    // Convert to Vec<f64>
+    let data = output.to_data().convert::<f32>();
+    let slice = data.as_slice::<f32>().unwrap();
+    Ok(slice.iter().map(|&v| v as f64).collect())
 }
 
 #[cfg(test)]

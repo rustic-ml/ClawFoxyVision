@@ -74,7 +74,9 @@ impl<B: Backend> TimeSeriesLstm<B> {
         let dropped = self.dropout.forward(pooled);
         
         // Apply the output layer - now outputs [batch_size, output_size]
-        self.output.forward(dropped)
+        let output = self.output.forward(dropped);
+        // Clamp output to [0.0, 1.0] to match normalized target range
+        output.clamp(0.0, 1.0)
     }
 }
 

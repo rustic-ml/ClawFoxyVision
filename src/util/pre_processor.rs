@@ -1,6 +1,7 @@
 // External crates
 use polars::error::PolarsError;
 use polars::prelude::*;
+use chrono::{Utc, Duration};
 use std::{error::Error, path::PathBuf};
 
 // Local modules
@@ -24,7 +25,16 @@ pub fn load_and_preprocess(full_path: &PathBuf) -> Result<DataFrame, Box<dyn Err
     }
 
     let file = std::fs::File::open(&full_path)?;
-    let mut df = CsvReader::new(file).finish()?;
+    // Compute cutoff from one year ago and filter rows by 'time'
+    let one_year_ago = Utc::now() - Duration::days(90);
+    let cutoff_str = one_year_ago.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    use polars::prelude::{col, lit};
+    // Read CSV lazily, filter by 'time' > cutoff, then collect
+    let mut df = CsvReader::new(file)
+        .finish()?
+        .lazy()
+        .filter(col("time").gt(lit(cutoff_str)))
+        .collect()?;
 
     // Verify required columns exist
     let required_columns = ["open", "high", "low", "close", "volume"];
@@ -34,11 +44,6 @@ pub fn load_and_preprocess(full_path: &PathBuf) -> Result<DataFrame, Box<dyn Err
                 format!("Required column {} not found", col).into(),
             )) as Box<dyn std::error::Error>);
         }
-    }
-
-    // Sort by timestamp if exists
-    if df.column("timestamp").is_ok() {
-        df = df.sort(vec!["timestamp"], SortMultipleOptions::default())?;
     }
 
     // Drop any rows with missing values

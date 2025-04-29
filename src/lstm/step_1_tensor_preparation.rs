@@ -5,6 +5,7 @@ use burn::tensor::{Shape, Tensor};
 use polars::error::PolarsResult;
 use polars::prelude::*;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 // Internal modules
 use crate::constants::{SEQUENCE_LENGTH, TECHNICAL_INDICATORS, VALIDATION_SPLIT_RATIO};
@@ -108,16 +109,10 @@ pub fn dataframe_to_tensors<B: Backend>(
     forecast_horizon: usize,
     device: &B::Device,
 ) -> PolarsResult<(Tensor<B, 3>, Tensor<B, 2>)> {
-    println!("DEBUG: Called dataframe_to_tensors");
     // Select only the columns in TECHNICAL_INDICATORS, in the correct order
     let df = df.select(TECHNICAL_INDICATORS)?;
     // Drop all rows with nulls to avoid shape mismatches
     let df = df.drop_nulls::<String>(None)?;
-    println!(
-        "DEBUG: DataFrame shape after select/drop_nulls: {:?}, columns: {:?}",
-        df.shape(),
-        df.get_column_names()
-    );
     let n_samples = df.height();
     let feature_columns: Vec<&str> = TECHNICAL_INDICATORS.iter().copied().collect();
     let n_features = feature_columns.len();
@@ -142,56 +137,47 @@ pub fn dataframe_to_tensors<B: Backend>(
         .iter()
         .map(|&name| df.column(name).unwrap().as_series().unwrap().clone())
         .collect();
-    for (idx, col) in columns.iter().enumerate() {
-        println!("DEBUG: Column {} (name: {}) length: {}", idx, feature_columns[idx], col.len());
-    }
-    println!("DEBUG: columns.len() = {}, columns[0].len() = {}", columns.len(), columns[0].len());
     let close_idx = feature_columns
         .iter()
         .position(|&c| c == "close")
         .expect("'close' column not found");
-    let mut features_data = Vec::with_capacity(n_sequences * sequence_length * n_features);
-    let mut target_data = Vec::with_capacity(n_sequences * forecast_horizon);
+    // Pre-allocate data buffers and fill in parallel
+    let mut features_data = vec![0f32; n_sequences * sequence_length * n_features];
+    let mut target_data = vec![0f32; n_sequences * forecast_horizon];
 
-    for i in 0..n_sequences {
-        for j in 0..sequence_length {
-            for k in 0..n_features {
-                let val = columns[k].f64().unwrap().get(i + j).unwrap_or(0.0);
-                if features_data.len() < 20 {
-                    println!("DEBUG: features_data[{}] = {} (i={}, j={}, k={})", features_data.len(), val, i, j, k);
+    // Parallel fill features_data: each chunk is one sequence
+    features_data
+        .par_chunks_mut(sequence_length * n_features)
+        .enumerate()
+        .for_each(|(i, chunk)| {
+            for j in 0..sequence_length {
+                for k in 0..n_features {
+                    let val = columns[k]
+                        .f64()
+                        .unwrap()
+                        .get(i + j)
+                        .unwrap_or(0.0) as f32;
+                    chunk[j * n_features + k] = val;
                 }
-                features_data.push(val as f32);
             }
-        }
-        // Multi-step targets: next forecast_horizon close values
-        for fh in 0..forecast_horizon {
-            let target = columns[close_idx].f64().unwrap().get(i + sequence_length + fh).unwrap_or(0.0);
-            target_data.push(target as f32);
-        }
-    }
+        });
+
+    // Parallel fill target_data: each chunk is one forecast horizon
+    target_data
+        .par_chunks_mut(forecast_horizon)
+        .enumerate()
+        .for_each(|(i, chunk)| {
+            for fh in 0..forecast_horizon {
+                let val = columns[close_idx]
+                    .f64()
+                    .unwrap()
+                    .get(i + sequence_length + fh)
+                    .unwrap_or(0.0) as f32;
+                chunk[fh] = val;
+            }
+        });
+
     let expected_len = n_sequences * sequence_length * n_features;
-    println!(
-        "DEBUG: n_sequences={}, sequence_length={}, n_features={}",
-        n_sequences, sequence_length, n_features
-    );
-    println!(
-        "DEBUG: types: n_sequences={}, sequence_length={}, n_features={}",
-        std::any::type_name_of_val(&n_sequences),
-        std::any::type_name_of_val(&sequence_length),
-        std::any::type_name_of_val(&n_features)
-    );
-    println!(
-        "DEBUG: n_sequences * sequence_length = {}",
-        n_sequences * sequence_length
-    );
-    println!(
-        "DEBUG: n_sequences * sequence_length * n_features = {}",
-        n_sequences * sequence_length * n_features
-    );
-    println!(
-        "DEBUG: n_sequences={}, sequence_length={}, n_features={}, product={}, features_data.len()={}",
-        n_sequences, sequence_length, n_features, n_sequences * sequence_length * n_features, features_data.len()
-    );
     if features_data.len() != expected_len {
         panic!(
             "Mismatch: features_data.len() = {}, expected = {} (n_sequences={}, sequence_length={}, n_features={})",
@@ -215,7 +201,6 @@ pub fn build_burn_lstm_model(
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 3>,
     burn::tensor::Tensor<burn::backend::LibTorch<f32>, 2>,
 )> {
-    println!("DEBUG: Called build_burn_lstm_model");
     type BurnBackend = burn::backend::LibTorch<f32>;
     let device = <BurnBackend as burn::tensor::backend::Backend>::Device::default();
     dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, forecast_horizon, &device)

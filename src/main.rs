@@ -1,8 +1,11 @@
 // External crates
-use burn::backend::LibTorch;
+use burn_autodiff::Autodiff;
 use burn::tensor::backend::Backend as BurnBackendTrait;
 use polars::prelude::*;
 use std::env;
+use rayon::ThreadPoolBuilder;
+use burn_ndarray::{NdArray, NdArrayDevice};
+use std::time::Instant;
 
 // Local modules
 use util::{feature_engineering, pre_processor};
@@ -44,11 +47,18 @@ pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
 }
 
 fn main() -> PolarsResult<()> {
-    // Accept ticker and model_type as command-line arguments
+    // Use CPU backend with NdArray (Mali GPU not CUDA)
+    type BurnBackend = Autodiff<NdArray<f32>>;
+    let device = NdArrayDevice::default();
+    println!("Using device: CPU NdArray");
+
+    // Enable Rayon default global thread pool for parallelism
+    ThreadPoolBuilder::new().build_global().unwrap();
+
     let args: Vec<String> = env::args().collect();
     let ticker = args.get(1).map(|s| s.to_uppercase()).unwrap_or("AAPL".to_string());
     let model_type = args.get(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
-    println!("Using ticker: {} | model_type: {}", ticker, model_type);
+    println!("Using ticker: {} | model_type: {} | backend: NdArray", ticker, model_type);
 
     let df = generate_stock_dataframe(ticker.as_str())?;
 
@@ -61,15 +71,23 @@ fn main() -> PolarsResult<()> {
     println!("Training dataset size: {} rows", train_df.height());
     println!("Testing dataset size: {} rows", test_df.height());
 
-    // Train and evaluate model
+    // Train and evaluate model with timing
+    let t_model_start = Instant::now();
     match train_and_evaluate(train_df.clone(), test_df.clone(), ticker.as_str(), model_type.as_str()) {
-        Ok(model_path) => println!("Training and evaluation completed successfully. Model saved at: {}", model_path.display()),
+        Ok(model_path) => {
+            println!("Training and evaluation completed successfully. Model saved at: {}", model_path.display());
+            println!("Duration - train & eval: {:?}", t_model_start.elapsed());
+        }
         Err(e) => eprintln!("Error during training and evaluation: {}", e),
     }
 
-    // Generate predictions
-    match generate_predictions(df, 390) {
-        Ok(_) => println!("Prediction generation completed successfully."),
+    // Generate predictions with timing
+    let t_pred_start = Instant::now();
+    match generate_predictions(df, &train_df) {
+        Ok(_) => {
+            println!("Prediction generation completed successfully.");
+            println!("Duration - prediction generation: {:?}", t_pred_start.elapsed());
+        }
         Err(e) => eprintln!("Error during prediction generation: {}", e),
     }
 
@@ -77,16 +95,21 @@ fn main() -> PolarsResult<()> {
 }
 
 fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, model_type: &str) -> Result<std::path::PathBuf, PolarsError> {
-    // Initialize device
-    type BurnBackend = LibTorch<f32>;
-    let device = <BurnBackend as BurnBackendTrait>::Device::default();
+    // Initialize device for training (CPU)
+    type BurnBackend = Autodiff<NdArray<f32>>;
+    let device = NdArrayDevice::default();
 
-    // Create training configuration
+    // Configure training (with early stopping parameters)
     let training_config = lstm::step_4_train_model::TrainingConfig {
         learning_rate: 0.001,
         batch_size: 32,
-        epochs: 20,
+        epochs: 10,
         test_split: 0.2,
+        // Early stopping settings
+        patience: lstm::step_4_train_model::TrainingConfig::default().patience,
+        min_delta: lstm::step_4_train_model::TrainingConfig::default().min_delta,
+        // Use default for any additional fields
+        ..Default::default()
     };
 
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
@@ -108,11 +131,12 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     } else {
         // Train model
         println!("Starting model training...");
-        let forecast_horizon = 390;
+        let forecast_horizon = 390; // full trading day in minutes
+        let ep_start = Instant::now();
         let (trained_model, _) =
-            lstm::step_4_train_model::train_model::<BurnBackend>(train_df.clone(), training_config, &device, ticker, model_type, forecast_horizon)
+            lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, forecast_horizon)
                 .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
-        println!("Trained and saved new model.");
+        println!("Trained and saved new model. Epoch took {:?}", ep_start.elapsed());
     }
 
     // Evaluate model
@@ -126,7 +150,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         &device
     ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
     // Perform evaluation
-    let forecast_horizon = 390;
+    let forecast_horizon = 390; // full trading day in minutes
     let rmse = lstm::step_4_train_model::evaluate_model(&trained_model, test_df.clone(), &device, forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
     println!("Test RMSE: {:.4}", rmse);
@@ -135,10 +159,11 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     Ok(model_path)
 }
 
-fn generate_predictions(df: DataFrame, forecast_horizon: usize) -> Result<(), PolarsError> {
-    // Initialize device
-    type BurnBackend = LibTorch<f32>;
-    let device = <BurnBackend as BurnBackendTrait>::Device::default();
+fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), PolarsError> {
+    let forecast_horizon = 390; // full trading day in minutes
+    // Initialize device for prediction (CPU)
+    type BurnBackend = Autodiff<NdArray<f32>>;
+    let device = NdArrayDevice::default();
 
     // Prepare data tensors
     let (features, _) = step_1_tensor_preparation::build_burn_lstm_model(df.clone(), forecast_horizon)
@@ -180,8 +205,8 @@ fn generate_predictions(df: DataFrame, forecast_horizon: usize) -> Result<(), Po
         step_5_prediction::predict_multi_step_direct(&model, df.clone(), &device, forecast_horizon)
             .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
 
-    // Denormalize predictions to original scale
-    let denormalized = step_5_prediction::denormalize_predictions(predictions, &df, "close")
+    // Denormalize predictions to original scale using training set min/max
+    let denormalized = step_5_prediction::denormalize_predictions(predictions, train_df, "close")
         .map_err(|e| PolarsError::ComputeError(format!("Denormalization error: {}", e).into()))?;
 
     // Print per-minute predictions with timestamps starting from 09:30

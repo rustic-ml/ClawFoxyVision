@@ -297,3 +297,24 @@ simple multi-output (direct multi-step) prediction,
 or do you want a sequence-to-sequence (autoregressive) approach
 
 let input_df = df.slice(n_rows as i64 - (sequence_length as i64 + 1), (sequence_length + 1) as usize);
+
+export OMP_NUM_THREADS=8     # or your core count
+export MKL_NUM_THREADS=8     # if you have Intel MKL
+export RAYON_NUM_THREADS=4   # for rayon-parallel loops
+
+let device = <BurnBackend as Backend>::Device::cuda(0).unwrap();
+
+use rayon::prelude::*;
+
+// instead of `for i in 0..n_sequences { … }`
+(0..n_sequences).into_par_iter().for_each(|i| {
+    let offset = i * sequence_length * n_features;
+    // fill features_data[offset .. offset + sequence_length*n_features]
+    // fill target_data[i*forecast_horizon ..]
+});
+
+let test_features = features.clone().narrow(0, train_size, test_size);
+let test_targets  = targets.clone().narrow(0, train_size, test_size);
+for epoch in 1..=config.epochs {
+    // … use &test_features and &test_targets in your eval pass
+}
