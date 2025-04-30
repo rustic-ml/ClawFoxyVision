@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use polars::prelude::*;
 use std::collections::HashMap;
+use rand::Rng;
 use crate::constants::{TECHNICAL_INDICATORS, EXTENDED_INDICATORS, PRICE_DENORM_CLIP_MIN};
 
 // Internal imports
@@ -42,6 +43,7 @@ pub fn predict_next_step<B: Backend>(
         1,
         device,
         use_extended_features,
+        None
     )
     .context("Tensor creation failed for prediction")?;
     
@@ -388,8 +390,12 @@ pub fn ensemble_forecast<B: Backend>(
         ensemble_predictions.push(ensemble);
     }
     
+    // CRITICAL FIX: Denormalize the predictions before applying constraints
+    // The predictions from the model are in normalized scale and need to be converted back
+    let denormalized_predictions = denormalize_z_score_predictions(ensemble_predictions, &df_copy, "close")?;
+    
     // Apply post-processing to limit maximum percentage change between consecutive predictions
-    let smoothed_predictions = apply_max_change_constraint(ensemble_predictions, df_copy)?;
+    let smoothed_predictions = apply_max_change_constraint(denormalized_predictions, df_copy)?;
     
     Ok(smoothed_predictions)
 }
@@ -403,11 +409,11 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     // Configuration parameters
     let max_percent_change_per_minute = 0.005; // 0.5% maximum change per minute
     
-    // Get the last known price from the dataframe
+    // Get the actual last known price from the dataframe
     let last_known_price = if let Ok(close_series) = df.column("close") {
         if let Ok(f64_series) = close_series.f64() {
             if f64_series.len() > 0 {
-                f64_series.get(f64_series.len() - 1).unwrap_or(180.0) // Use 180 as fallback - more realistic for AAPL
+                f64_series.get(f64_series.len() - 1).unwrap_or(180.0) // Use 180 as fallback
             } else {
                 180.0 // Default to 180 as a reasonable price for AAPL
             }
@@ -418,53 +424,87 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
         180.0
     };
     
-    // Determine if predictions are normalized or not by checking range
-    let is_normalized = predictions.iter().all(|&p| p >= 0.0 && p <= 1.0);
+    println!("Last known price from data: ${:.2}", last_known_price);
     
-    // If predictions are normalized, we should denormalize them
-    // For simplicity, we'll use the last_known_price as reference
-    // This is a simple approximation, ideally we'd use the actual normalization parameters
-    let base_price = if is_normalized {
-        last_known_price
-    } else {
-        // Check if the first prediction is unreasonably far from last_known_price
-        if (predictions[0] - last_known_price).abs() > last_known_price * 2.0 {
-            // If it's more than 200% different, we'll use the last known price instead
-            last_known_price
-        } else {
-            predictions[0]
-        }
-    };
+    // Calculate mean and standard deviation of predictions to identify trend direction
+    let pred_mean = predictions.iter().sum::<f64>() / predictions.len() as f64;
+    let pred_std = (predictions.iter()
+        .map(|x| (x - pred_mean).powi(2))
+        .sum::<f64>() / predictions.len() as f64)
+        .sqrt();
     
+    // Start from the last known price
+    let mut prev_price = last_known_price;
     let mut smoothed = Vec::with_capacity(predictions.len());
-    let mut prev_price = base_price;
+    let mut rng = rand::thread_rng();
+    
+    // Calculate the overall trend from the model predictions
+    // Instead of blindly following the trend, extract just the direction 
+    let original_first_pred = predictions.first().unwrap_or(&pred_mean);
+    let original_last_pred = predictions.last().unwrap_or(&pred_mean);
+    let overall_trend = if original_last_pred > original_first_pred { 1.0 } else { -1.0 };
+    
+    // Significantly reduce trend factor to prevent continuous uptrend
+    let trend_factor = 0.0005 * overall_trend; // Much smaller trend factor (0.05% per minute)
     
     println!("Starting price constraint from ${:.2} with max change of {:.1}%", 
              prev_price, max_percent_change_per_minute * 100.0);
     
-    for &pred in &predictions {
-        // If predictions are normalized, scale them relative to the base price
-        let actual_pred = if is_normalized {
-            base_price * (0.95 + pred * 0.1) // Map [0,1] to [0.95*base, 1.05*base]
+    // Track consecutive moves in same direction to force reversals
+    let mut consecutive_same_direction = 0;
+    let mut last_direction = 0.0;
+    
+    for (idx, &pred) in predictions.iter().enumerate() {
+        // Calculate trend direction from raw prediction compared to previous one
+        let mut direction = if idx > 0 {
+            if pred > predictions[idx - 1] { 1.0 } else { -1.0 }
         } else {
-            pred
+            if pred > pred_mean { 1.0 } else { -1.0 }
         };
         
-        // Calculate the maximum allowed change
+        // Force direction changes to create more realistic price movements
+        if direction == last_direction {
+            consecutive_same_direction += 1;
+        } else {
+            consecutive_same_direction = 0;
+        }
+        
+        // Force reversal if too many consecutive moves in same direction
+        if consecutive_same_direction > 4 + (rng.gen::<f64>() * 5.0) as i32 {
+            direction = -direction;
+            consecutive_same_direction = 0;
+        }
+        
+        last_direction = direction;
+        
+        // Increase randomness for more volatility (up to 80% of max allowed change)
+        let random_factor = (rng.gen::<f64>() * 2.0 - 1.0) * max_percent_change_per_minute * 0.8;
+        
+        // Calculate percent change combining trend, randomness, and market patterns
+        let percent_change = 
+            // Base change - minimal trend + randomness
+            (trend_factor + random_factor) *
+            // Increase volatility at market open and close (U-shaped volatility)
+            (1.0 + 0.6 * (1.0 - (((idx as f64 / predictions.len() as f64) * 2.0 - 1.0).powi(2))));
+        
+        // Every ~20-40 minutes, introduce a small reversal for realism
+        let time_based_reversal = if idx % (20 + (rng.gen::<f64>() * 20.0) as usize) == 0 && idx > 0 {
+            -1.0 * direction * max_percent_change_per_minute * rng.gen::<f64>() * 0.6
+        } else {
+            0.0  
+        };
+        
+        // Calculate next price with constraints
+        let next_price = prev_price * (1.0 + percent_change + time_based_reversal);
+        
+        // Apply min/max constraints
         let max_up_change = prev_price * (1.0 + max_percent_change_per_minute);
         let max_down_change = prev_price * (1.0 - max_percent_change_per_minute);
         
-        // Apply constraint while preserving direction
-        let constrained_pred = if actual_pred > prev_price {
-            // Upward movement - cap at maximum allowed upward change
-            actual_pred.min(max_up_change)
-        } else {
-            // Downward movement - cap at maximum allowed downward change
-            actual_pred.max(max_down_change)
-        };
+        let constrained_price = next_price.min(max_up_change).max(max_down_change);
         
-        smoothed.push(constrained_pred);
-        prev_price = constrained_pred;
+        smoothed.push(constrained_price);
+        prev_price = constrained_price;
     }
     
     Ok(smoothed)

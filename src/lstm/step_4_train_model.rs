@@ -65,7 +65,7 @@ pub fn train_model(
 
     // Prepare data by splitting into training and validation sets
     let (features, targets) =
-        step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, forecast_horizon, device, false)
+        step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, forecast_horizon, device, false, None)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     println!(
         "Data prepared: features shape: {:?}, targets shape: {:?}",
@@ -244,6 +244,7 @@ pub fn evaluate_model<B: Backend>(
         forecast_horizon,
         device,
         false,
+        None
     )
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     // Forward pass
