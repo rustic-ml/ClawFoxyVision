@@ -1,8 +1,9 @@
 // External imports
 use burn::module::Module;
-use burn::tensor::{backend::Backend, Tensor, activation};
-use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig, loss};
-use crate::lstm::step_2_lstm_cell::LSTM;
+use burn::prelude::Backend;
+use burn::tensor::{activation, Tensor};
+use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig};
+use crate::minute::lstm::step_2_lstm_cell::LSTM;
 use crate::constants::{DEFAULT_DROPOUT, L2_REGULARIZATION};
 
 /// TimeSeriesLstm architecture for forecasting

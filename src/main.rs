@@ -1,23 +1,19 @@
 // External crates
 use burn_autodiff::Autodiff;
-use burn::tensor::backend::Backend as BurnBackendTrait;
 use polars::prelude::*;
 use std::env;
 use rayon::ThreadPoolBuilder;
 use burn_ndarray::{NdArray, NdArrayDevice};
-use std::time::{Instant, Duration};
+use std::time::Instant;
 
 // Local modules
 use util::{feature_engineering, pre_processor};
 
-use lstm::{
-    step_1_tensor_preparation, 
-    step_3_lstm_model_arch, 
-    step_5_prediction,
-};
+use minute::lstm::step_1_tensor_preparation;
 
 // Constants
 pub mod constants;
+pub mod minute;
 
 pub mod util {
     pub mod feature_engineering;
@@ -25,26 +21,21 @@ pub mod util {
     pub mod model_utils;
 }
 
-pub mod lstm {
-    pub mod step_1_tensor_preparation;
-    pub mod step_2_lstm_cell;
-    pub mod step_3_lstm_model_arch;
-    pub mod step_4_train_model;
-    pub mod step_5_prediction;
-    pub mod step_6_model_serialization;
-    
-    #[cfg(test)]
-    pub mod tests {
-        pub mod test_tensor_preparation;
-    }
-}
-
 pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
     let file_path = format!("{}-ticker_minute_bars.csv", symbol);
     let workspace_dir = std::env::current_dir().expect("Failed to get current directory");
     let full_path = workspace_dir.join(file_path);
 
-    let mut ohlc_df = pre_processor::load_and_preprocess(&full_path)
+    let args: Vec<String> = std::env::args().collect();
+    let model_type = args.get(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
+    
+    let training_days = if model_type == "lstm" {
+        Some(constants::LSTM_TRAINING_DAYS)
+    } else {
+        None
+    };
+
+    let mut ohlc_df = pre_processor::load_and_preprocess(&full_path, training_days)
         .map_err(|e| PolarsError::ComputeError(format!("Preprocessing error: {}", e).into()))?;
 
     let preprocessed_df = feature_engineering::add_technical_indicators(&mut ohlc_df)?;
@@ -107,7 +98,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     let device = NdArrayDevice::default();
 
     // Configure training (with early stopping parameters)
-    let training_config = lstm::step_4_train_model::TrainingConfig {
+    let training_config = minute::lstm::step_4_train_model::TrainingConfig {
         learning_rate: 0.001,
         batch_size: 32,
         epochs: 10,
@@ -115,8 +106,8 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         // Enhanced dropout
         dropout: constants::DEFAULT_DROPOUT,
         // Early stopping settings
-        patience: lstm::step_4_train_model::TrainingConfig::default().patience,
-        min_delta: lstm::step_4_train_model::TrainingConfig::default().min_delta,
+        patience: minute::lstm::step_4_train_model::TrainingConfig::default().patience,
+        min_delta: minute::lstm::step_4_train_model::TrainingConfig::default().min_delta,
         // Use Huber loss to be more robust
         use_huber_loss: true,
         // Use default for any additional fields
@@ -144,7 +135,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
         println!("Starting model training...");
         let ep_start = Instant::now();
         let (_trained_model, _) =
-            lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, 390)
+            minute::lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, 390)
                 .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
         println!("Trained and saved new model. Epoch took {:?}", ep_start.elapsed());
     }
@@ -161,7 +152,7 @@ fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, mod
     ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
     // Perform evaluation
     let forecast_horizon = 390; // full trading day in minutes
-    let rmse = lstm::step_4_train_model::evaluate_model(&_trained_model, test_df.clone(), &device, forecast_horizon)
+    let rmse = minute::lstm::step_4_train_model::evaluate_model(&_trained_model, test_df.clone(), &device, forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
     println!("Test RMSE: {:.4}", rmse);
 
@@ -176,7 +167,7 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
     let device = NdArrayDevice::default();
 
     // Prepare data tensors - using the enhanced build_enhanced_lstm_model function
-    let (features, _) = step_1_tensor_preparation::build_enhanced_lstm_model(df.clone(), forecast_horizon)
+    let (features, _) = minute::lstm::step_1_tensor_preparation::build_enhanced_lstm_model(df.clone(), forecast_horizon)
         .map_err(|e| PolarsError::ComputeError(format!("Tensor building error: {}", e).into()))?;
 
     // Load model metadata to get correct hyperparameters
@@ -198,8 +189,8 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
     let dropout = constants::DEFAULT_DROPOUT; // Use our improved dropout
 
     // Create model with loaded hyperparameters
-    let model: step_3_lstm_model_arch::TimeSeriesLstm<BurnBackend> =
-        step_3_lstm_model_arch::TimeSeriesLstm::new(
+    let model: minute::lstm::step_3_lstm_model_arch::TimeSeriesLstm<BurnBackend> =
+        minute::lstm::step_3_lstm_model_arch::TimeSeriesLstm::new(
             input_dim,
             hidden_dim,
             output_dim,
@@ -212,7 +203,7 @@ fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), Polar
     // Use our new ensemble forecasting with multiple predictive strategies
     println!("Generating ensemble forecast for the next trading day ({} minutes)...", forecast_horizon);
     let predictions =
-        step_5_prediction::ensemble_forecast(&loaded_model, df.clone(), &device, forecast_horizon)
+        minute::lstm::step_5_prediction::ensemble_forecast(&loaded_model, df.clone(), &device, forecast_horizon)
             .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
 
     // The predictions are already denormalized by ensemble_forecast

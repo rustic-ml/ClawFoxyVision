@@ -2,12 +2,10 @@ use anyhow::Result;
 use polars::prelude::*;
 use burn::backend::LibTorch;
 use burn::tensor::backend::Backend;
-
-use crate::lstm::step_1_tensor_preparation::{
-    self, 
-    normalize_features, 
-    check_for_nans, 
-    dataframe_to_tensors
+use crate::minute::lstm::step_1_tensor_preparation::{
+    dataframe_to_tensors,
+    normalize_features,
+    check_for_nans
 };
 use crate::constants::TECHNICAL_INDICATORS;
 

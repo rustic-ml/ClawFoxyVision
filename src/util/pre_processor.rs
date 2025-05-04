@@ -6,6 +6,7 @@ use std::{error::Error, path::PathBuf};
 
 // Local modules
 use crate::feature_engineering::add_technical_indicators;
+use crate::constants::LSTM_TRAINING_DAYS;
 
 
 /// Loads and preprocesses a CSV file into a DataFrame
@@ -13,11 +14,12 @@ use crate::feature_engineering::add_technical_indicators;
 /// # Arguments
 ///
 /// * `file_path` - Path to the CSV file relative to the `src` directory
+/// * `days` - Optional number of days to look back for data (defaults to LSTM_TRAINING_DAYS)
 ///
 /// # Returns
 ///
 /// Returns a Result containing the preprocessed DataFrame or an error
-pub fn load_and_preprocess(full_path: &PathBuf) -> Result<DataFrame, Box<dyn Error>> {
+pub fn load_and_preprocess(full_path: &PathBuf, days: Option<i64>) -> Result<DataFrame, Box<dyn Error>> {
     println!("Loading data from: {}", full_path.display());
 
     if !full_path.exists() {
@@ -26,7 +28,8 @@ pub fn load_and_preprocess(full_path: &PathBuf) -> Result<DataFrame, Box<dyn Err
 
     let file = std::fs::File::open(&full_path)?;
     // Compute cutoff from one year ago and filter rows by 'time'
-    let one_year_ago = Utc::now() - Duration::days(150);
+    let training_days = days.unwrap_or(LSTM_TRAINING_DAYS);
+    let one_year_ago = Utc::now() - Duration::days(training_days);
     let cutoff_str = one_year_ago.format("%Y-%m-%d %H:%M:%S UTC").to_string();
     use polars::prelude::{col, lit};
     // Read CSV lazily, filter by 'time' > cutoff, then collect
@@ -67,7 +70,7 @@ pub fn prepare_lstm_data(
     _sequence_length: usize,
 ) -> Result<DataFrame, Box<dyn Error>> {
     // Load and preprocess data
-    let mut df = load_and_preprocess(file_path)?;
+    let mut df = load_and_preprocess(file_path, None)?;
 
     // Add technical indicators
     df = add_technical_indicators(&mut df)?;

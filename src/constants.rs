@@ -15,7 +15,7 @@ pub const TECHNICAL_INDICATORS: [&str; 12] = [
 ];
 
 // Extended technical indicators including time-based features and lag features
-pub const EXTENDED_INDICATORS: [&str; 21] = [
+pub const EXTENDED_INDICATORS: [&str; 23] = [
     // Original indicators
     "close",
     "volume",
@@ -29,6 +29,9 @@ pub const EXTENDED_INDICATORS: [&str; 21] = [
     "atr_14",
     "returns",
     "price_range",
+    // New enhanced indicators
+    "bb_b",
+    "gk_volatility",
     // Time-based features
     "hour_sin",
     "hour_cos",
@@ -46,8 +49,9 @@ pub const EXTENDED_INDICATORS: [&str; 21] = [
 pub const SEQUENCE_LENGTH: usize = 10; // Number of time steps to look back
 
 // Data preprocessing
+pub const LSTM_TRAINING_DAYS: i64 = 200; // Reduced from 400 to prevent memory issues
 pub const VALIDATION_SPLIT_RATIO: f64 = 0.2; // 20% of data for validation
-pub const DEFAULT_DROPOUT: f64 = 0.3;  // Default dropout rate (increased from typical 0.1-0.2)
+pub const DEFAULT_DROPOUT: f64 = 0.15;  // Reduced from 0.3 to prevent overfitting while allowing more learning
 pub const PRICE_DENORM_CLIP_MIN: f64 = 0.0; // Prevent negative price predictions
 pub const L2_REGULARIZATION: f64 = 0.01; // L2 regularization strength
 

@@ -97,11 +97,11 @@ LSTM(
 
 ### File Structure
 ```
-src/lstm/
-├── step_1_preprocessor.rs    # Data loading and preprocessing
-├── step_2_feature_engineering.rs  # Technical indicators
-├── step_3_burn_lstm_model.rs     # LSTM model implementation
-└── step_4_predictor.rs       # Prediction and evaluation
+src/minute/lstm/
+├── step_1_tensor_preparation.rs    # Data loading and preprocessing
+├── step_2_lstm_cell.rs  # Technical indicators
+├── step_3_lstm_model_arch.rs     # LSTM model implementation
+└── step_4_train_model.rs       # Prediction and evaluation
 ```
 
 ### Testing Strategy

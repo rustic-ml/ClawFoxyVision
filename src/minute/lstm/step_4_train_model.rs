@@ -13,7 +13,7 @@ use crate::constants;
 use crate::util::model_utils;
 use burn_ndarray::NdArray;
 use burn_autodiff::Autodiff;
-use anyhow::anyhow;  // For error mapping in evaluate_model
+  // For error mapping in evaluate_model
 
 type BurnBackend = Autodiff<NdArray<f32>>;
 
@@ -110,11 +110,11 @@ pub fn train_model(
         batches
     }
 
-    // Initialize the model (reduced complexity for faster training)
-    let hidden_size = 32;
-    let num_layers = 1;
-    let bidirectional = false;
-    let dropout = 0.2;
+    // Initialize the model (reduced complexity for memory efficiency)
+    let hidden_size = 64; // Reduced from 128 to save memory while maintaining reasonable capacity
+    let num_layers = 2;   // Keeping 2 layers for depth
+    let bidirectional = true; // Keeping bidirectional for better pattern recognition 
+    let dropout = config.dropout;
 
     let mut model = TimeSeriesLstm::<BurnBackend>::new(
         input_size,
@@ -135,7 +135,7 @@ pub fn train_model(
     // Initialize optimizer
     let mut optimizer = AdamConfig::new().init();
 
-    let mut loss_history = Vec::new();
+    let loss_history = Vec::new();
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
     for epoch in 1..=config.epochs {
         // Update learning rate (linear decay)

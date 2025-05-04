@@ -3,12 +3,11 @@ use burn::prelude::Backend;
 use burn::module::Module;
 use std::path::PathBuf;
 use std::path::Path;
-use std::thread::panicking;
 use burn::record::{BinFileRecorder, FullPrecisionSettings};
 use serde_json::from_str;
-use chrono::{NaiveDateTime, Local, Datelike};
+use chrono::{NaiveDateTime, Local};
 
-use crate::lstm::{
+use crate::minute::lstm::{
     step_3_lstm_model_arch::TimeSeriesLstm,
     step_6_model_serialization::{ModelMetadata, load_model_with_metadata},
 };

@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-polars = { version = "0.46.0", features = ["lazy", 
+polars = { version = "0.47.0", features = ["lazy", 
                                             "strings", 
                                             "temporal", 
                                             "rolling_window"] }
-bincode = "2.0.1"
+bincode = "1.3.3"
 chrono = "0.4.34"
-burn = { version = "0.17.0", features = ["tch", "ndarray"] }
+burn = { version = "0.17.0", features = ["tch", "ndarray", "train"] }
 burn-core = "0.17.0"
 burn-autodiff = "0.17.0"
 burn-train = "0.17.0"
@@ -25,7 +25,8 @@ ndarray = "0.16.1"
 rayon = "1.7.0"
 num-traits = "0.2.19"
 rand = "0.9.1"
-polars-utils = "0.46.0"
+polars-utils = "0.47.0"
+ta-lib-in-rust = "1.0.4"
 
 [build-dependencies]
-built = "0.7.0"
+built = "0.8.0"

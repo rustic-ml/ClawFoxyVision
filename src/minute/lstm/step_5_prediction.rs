@@ -2,7 +2,6 @@
 use anyhow::{Context, Result};
 use burn::tensor::backend::Backend;
 use polars::prelude::*;
-use std::collections::HashMap;
 use rand::Rng;
 use crate::constants::{TECHNICAL_INDICATORS, EXTENDED_INDICATORS, PRICE_DENORM_CLIP_MIN};
 
@@ -192,6 +191,7 @@ pub fn generate_forecast_with_correction<B: Backend>(
 }
 
 /// Convert predictions back to original scale using Z-score denormalization
+/// with volatility constraints based on historical data
 pub fn denormalize_z_score_predictions(
     predictions: Vec<f64>,
     original_df: &DataFrame,
@@ -208,13 +208,88 @@ pub fn denormalize_z_score_predictions(
     // Avoid division by zero
     let std = if std < f64::EPSILON { 1.0 } else { std };
     
-    // Denormalize the predictions using the Z-score formula: x = z*std + mean
-    let denormalized = predictions.iter()
-        .map(|&p| (p * std) + mean)
-        .map(|p| p.max(PRICE_DENORM_CLIP_MIN)) // Prevent negative prices
-        .collect();
+    // Calculate historical daily volatility
+    let daily_volatility = calculate_historical_volatility(original_df, column)?;
+    println!("Historical daily volatility: {:.2}%", daily_volatility * 100.0);
+    
+    // Calculate realistic per-minute volatility constraint
+    // Typical stock prices move around 0.5-1% of daily volatility per minute
+    let minute_volatility_factor = daily_volatility * 0.007; // 0.7% of daily volatility per minute
+    
+    // Denormalize the predictions
+    let mut denormalized = Vec::with_capacity(predictions.len());
+    let mut prev_value = f64_series.get(f64_series.len() - 1).unwrap_or(mean);
+    
+    for (i, &pred) in predictions.iter().enumerate() {
+        // Basic denormalization using the Z-score formula: x = z*std + mean
+        let raw_value = (pred * std) + mean;
+        
+        // Calculate max allowed change based on historical volatility
+        let max_allowed_change = prev_value * minute_volatility_factor;
+        
+        // Apply volatility constraints
+        let constrained_value = if (raw_value - prev_value).abs() > max_allowed_change {
+            // Limit the change to the maximum allowed
+            if raw_value > prev_value {
+                prev_value + max_allowed_change
+            } else {
+                prev_value - max_allowed_change
+            }
+        } else {
+            raw_value
+        };
+        
+        // Prevent negative prices
+        let final_value = constrained_value.max(PRICE_DENORM_CLIP_MIN);
+        denormalized.push(final_value);
+        
+        // Update prev_value for next iteration
+        prev_value = final_value;
+    }
     
     Ok(denormalized)
+}
+
+/// Calculate the historical volatility from a DataFrame
+fn calculate_historical_volatility(df: &DataFrame, price_column: &str) -> Result<f64> {
+    if df.height() < 10 {
+        // Not enough data for reliable calculation
+        return Ok(0.02); // Return a default 2% daily volatility
+    }
+    
+    let series = df.column(price_column)?;
+    let f64_series = series.f64()?;
+    
+    // Calculate daily returns
+    let mut returns = Vec::new();
+    let mut prev_value = f64_series.get(0).unwrap_or(0.0);
+    
+    for i in 1..f64_series.len() {
+        if let Some(curr) = f64_series.get(i) {
+            if prev_value > 0.0 {
+                let ret = (curr - prev_value) / prev_value;
+                returns.push(ret);
+            }
+            prev_value = curr;
+        }
+    }
+    
+    if returns.is_empty() {
+        return Ok(0.02); // Default if no valid returns
+    }
+    
+    // Calculate standard deviation of returns
+    let mean_return = returns.iter().sum::<f64>() / returns.len() as f64;
+    let variance = returns.iter()
+        .map(|&r| (r - mean_return).powi(2))
+        .sum::<f64>() / returns.len() as f64;
+    
+    let daily_vol = variance.sqrt();
+    
+    // Cap volatility to reasonable range
+    let capped_vol = daily_vol.min(0.05).max(0.005);
+    
+    Ok(capped_vol)
 }
 
 /// Convert predictions back to original scale (reverse min-max normalization)
@@ -367,17 +442,22 @@ pub fn ensemble_forecast<B: Backend>(
     let extended_predictions = recursive_predictions.clone();
     
     // Combine predictions using weighted average
-    let weights = [0.4, 0.6, 0.0]; // Give more weight to recursive predictions, ignore extended
+    // Adjusted weights to favor direct predictions more (they're typically more stable)
+    let weights = [0.6, 0.4, 0.0]; // Give more weight to direct predictions
     let mut ensemble_predictions = Vec::with_capacity(forecast_horizon);
     
     for i in 0..forecast_horizon {
         let direct = direct_predictions.get(i).copied().unwrap_or(0.0);
         let recursive = recursive_predictions.get(i).copied().unwrap_or(0.0);
         
-        // Simplify weighting to just direct and recursive
+        // Dynamic weights based on position in forecast horizon
+        // Direct predictions tend to be better for early predictions
+        // While recursive might capture trends better later (but with higher variance)
         let position_factor = i as f64 / forecast_horizon as f64;
-        let direct_weight = weights[0] + (position_factor * 0.2); // Increase weight for later predictions
-        let recursive_weight = weights[1] - (position_factor * 0.2); // Decrease for later predictions
+        
+        // Start with heavy direct weight, gradually shift toward recursive
+        let direct_weight = weights[0] - (position_factor * 0.1); // Decrease weight for later predictions
+        let recursive_weight = weights[1] + (position_factor * 0.1); // Increase for later predictions
         
         // Normalize weights to sum to 1.0
         let total_weight = direct_weight + recursive_weight;
@@ -407,7 +487,7 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     }
     
     // Configuration parameters
-    let max_percent_change_per_minute = 0.005; // 0.5% maximum change per minute
+    let max_percent_change_per_minute = 0.0025; // 0.25% maximum change per minute (reduced from 0.5%)
     
     // Get the actual last known price from the dataframe
     let last_known_price = if let Ok(close_series) = df.column("close") {
@@ -436,7 +516,7 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     // Start from the last known price
     let mut prev_price = last_known_price;
     let mut smoothed = Vec::with_capacity(predictions.len());
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     
     // Calculate the overall trend from the model predictions
     // Instead of blindly following the trend, extract just the direction 
@@ -445,14 +525,19 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     let overall_trend = if original_last_pred > original_first_pred { 1.0 } else { -1.0 };
     
     // Significantly reduce trend factor to prevent continuous uptrend
-    let trend_factor = 0.0005 * overall_trend; // Much smaller trend factor (0.05% per minute)
+    let trend_factor = 0.0002 * overall_trend; // Much smaller trend factor (0.02% per minute)
     
-    println!("Starting price constraint from ${:.2} with max change of {:.1}%", 
+    println!("Starting price constraint from ${:.2} with max change of {:.2}%", 
              prev_price, max_percent_change_per_minute * 100.0);
     
     // Track consecutive moves in same direction to force reversals
     let mut consecutive_same_direction = 0;
     let mut last_direction = 0.0;
+    
+    // Keep track of mean and starting price for mean reversion
+    let start_price = prev_price;
+    let mean_price = predictions.iter().sum::<f64>() / predictions.len() as f64;
+    let mean_reversion_strength = 0.2; // Strength of mean reversion effect
     
     for (idx, &pred) in predictions.iter().enumerate() {
         // Calculate trend direction from raw prediction compared to previous one
@@ -469,27 +554,31 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
             consecutive_same_direction = 0;
         }
         
-        // Force reversal if too many consecutive moves in same direction
-        if consecutive_same_direction > 4 + (rng.gen::<f64>() * 5.0) as i32 {
+        // Force reversal if too many consecutive moves in same direction (more aggressive)
+        if consecutive_same_direction > 3 + (rng.random::<f64>() * 3.0) as i32 {
             direction = -direction;
             consecutive_same_direction = 0;
         }
         
         last_direction = direction;
         
-        // Increase randomness for more volatility (up to 80% of max allowed change)
-        let random_factor = (rng.gen::<f64>() * 2.0 - 1.0) * max_percent_change_per_minute * 0.8;
+        // Increase randomness for more volatility (up to 70% of max allowed change)
+        let random_factor = (rng.random::<f64>() * 2.0 - 1.0) * max_percent_change_per_minute * 0.7;
         
-        // Calculate percent change combining trend, randomness, and market patterns
+        // Apply mean reversion - push price back toward mean/start price when it deviates too much
+        let price_deviation = (prev_price / start_price) - 1.0;
+        let mean_reversion = -price_deviation * mean_reversion_strength * max_percent_change_per_minute;
+        
+        // Calculate percent change combining trend, randomness, mean reversion and market patterns
         let percent_change = 
-            // Base change - minimal trend + randomness
-            (trend_factor + random_factor) *
+            // Base change - minimal trend + randomness + mean reversion
+            (trend_factor + random_factor + mean_reversion) *
             // Increase volatility at market open and close (U-shaped volatility)
-            (1.0 + 0.6 * (1.0 - (((idx as f64 / predictions.len() as f64) * 2.0 - 1.0).powi(2))));
+            (1.0 + 0.5 * (1.0 - (((idx as f64 / predictions.len() as f64) * 2.0 - 1.0).powi(2))));
         
-        // Every ~20-40 minutes, introduce a small reversal for realism
-        let time_based_reversal = if idx % (20 + (rng.gen::<f64>() * 20.0) as usize) == 0 && idx > 0 {
-            -1.0 * direction * max_percent_change_per_minute * rng.gen::<f64>() * 0.6
+        // Every ~15-30 minutes, introduce a small reversal for realism
+        let time_based_reversal = if idx % (15 + (rng.random::<f64>() * 15.0) as usize) == 0 && idx > 0 {
+            -1.0 * direction * max_percent_change_per_minute * rng.random::<f64>() * 0.8
         } else {
             0.0  
         };
@@ -508,4 +597,58 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     }
     
     Ok(smoothed)
+}
+
+// Function that uses random number generation
+pub fn add_market_noise(predictions: &mut [f64], max_percent_change_per_minute: f64) {
+    let mut rng = rand::rng();
+    
+    // Track consecutive price movements in the same direction
+    let mut prev_direction = 0.0;
+    let mut consecutive_same_direction = 0;
+    
+    for idx in 0..predictions.len() {
+        // Apply various market microstructure effects
+        
+        // 1. Mean reversion after consecutive movements in the same direction
+        let direction = if idx > 0 {
+            if predictions[idx] > predictions[idx - 1] { 1.0 } else { -1.0 }
+        } else {
+            0.0
+        };
+        
+        if direction == prev_direction && direction != 0.0 {
+            consecutive_same_direction += 1;
+        } else {
+            consecutive_same_direction = 0;
+        }
+        
+        if consecutive_same_direction > 3 + (rng.random::<f64>() * 3.0) as i32 {
+            // Mean reversion - add opposite force
+            let reversion = -direction * max_percent_change_per_minute * 0.6;
+            predictions[idx] *= 1.0 + reversion;
+            consecutive_same_direction = 0;
+        }
+        
+        // 2. Random noise (market microstructure)
+        let random_factor = (rng.random::<f64>() * 2.0 - 1.0) * max_percent_change_per_minute * 0.7;
+        predictions[idx] *= 1.0 + random_factor;
+        
+        // 3. Ensure no negative prices
+        if predictions[idx] < 0.0 {
+            predictions[idx] = 0.01;
+        }
+        
+        // Store current direction for next iteration
+        prev_direction = direction;
+        
+        // 4. Time-based patterns (e.g., reversals at round time marks)
+        let time_based_reversal = if idx % (15 + (rng.random::<f64>() * 15.0) as usize) == 0 && idx > 0 {
+            -1.0 * direction * max_percent_change_per_minute * rng.random::<f64>() * 0.8
+        } else {
+            0.0
+        };
+        
+        predictions[idx] *= 1.0 + time_based_reversal;
+    }
 }

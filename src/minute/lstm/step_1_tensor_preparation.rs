@@ -1,22 +1,20 @@
 // External crates
-use anyhow::{bail, Result};
+use anyhow::Result;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Shape, Tensor};
 use polars::error::PolarsResult;
 use polars::prelude::*;
-use polars::prelude::PlSmallStr;
-use ndarray::Array2;
 use rayon::prelude::*;
 use serde_json;
-use std::collections::HashMap;
 use rand::Rng;
-use rand::prelude::SliceRandom;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::convert::Into;
 use polars::series::Series;
 use polars_utils::float::IsFloat;
 
 // Internal modules
-use crate::constants::{SEQUENCE_LENGTH, TECHNICAL_INDICATORS, VALIDATION_SPLIT_RATIO, EXTENDED_INDICATORS, PRICE_DENORM_CLIP_MIN};
+use crate::constants::{TECHNICAL_INDICATORS, EXTENDED_INDICATORS};
 
 /// Splits the DataFrame into training and validation sets using time-based cross-validation
 ///
@@ -368,7 +366,7 @@ pub fn augment_time_series(
     augmented_dfs.push(df.clone());
     
     let orig_height = df.height();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     
     for _ in 0..augmentation_factor {
         // Create a copy of the original dataframe
@@ -392,7 +390,7 @@ pub fn augment_time_series(
                 let mut jittered = Vec::with_capacity(orig_height);
                 for i in 0..orig_height {
                     let orig_val = f_series.get(i).unwrap_or(0.0);
-                    let noise = rng.gen_range(-std..std);
+                    let noise = rng.random_range(-std..std);
                     jittered.push(orig_val + noise);
                 }
                 
@@ -492,68 +490,169 @@ pub fn normalize_features(
             }
 
             let f_series = series.f64()?;
-
-            // For price columns, use z-score normalization
-            if price_columns.contains(&col) {
-                let (mean, std) = match (f_series.mean(), f_series.std(1)) {
-                    (Some(mean), Some(std)) => (mean, std),
-                    // If mean or std calculation fails, skip normalization
-                    _ => continue,
-                };
-                
-                // Save params for denormalization
-                norm_params.insert(col.to_string(), (0.0, 0.0, mean, std));
-                
-                // Handle constant columns (where std == 0)
-                if std.abs() < f64::EPSILON {
-                    // For constant columns, set values to 0 (z-score of mean is 0)
+            
+            // Check if we have any NaN values in this series
+            let mut has_nans = false;
+            for opt_val in f_series.iter() {
+                if let Some(val) = opt_val {
+                    if val.is_nan() {
+                        has_nans = true;
+                        break;
+                    }
+                } else {
+                    has_nans = true;
+                    break;
+                }
+            }
+            
+            // Check if this is a constant column
+            let min = f_series.min().unwrap_or(0.0);
+            let max = f_series.max().unwrap_or(1.0);
+            let is_constant = (max - min).abs() < 1e-10;
+            
+            // Handle constant columns specially based on column type
+            if is_constant {
+                if price_columns.contains(&col) {
+                    // For constant price columns, set values to 0.0
                     let constant_series = Series::new(col.into(), vec![0.0f64; df.height()]);
                     df.replace(col, constant_series)?;
-                    continue;
-                }
-                
-                // Apply z-score normalization
-                let normalized: Vec<f64> = f_series.into_iter()
-                    .map(|opt_v| {
-                        if let Some(v) = opt_v {
-                            (v - mean) / std
-                        } else {
-                            0.0 // Default for missing values
-                        }
-                    })
-                    .collect();
-                df.replace(col, Series::new(col.into(), normalized))?;
-            } 
-            // For other columns, use min-max scaling
-            else {
-                let (min, max) = match (f_series.min(), f_series.max()) {
-                    (Some(min), Some(max)) => (min, max),
-                    // If either min or max is missing, skip normalization
-                    _ => continue,
-                };
-                
-                // Save params for denormalization
-                norm_params.insert(col.to_string(), (min, max, 0.0, 0.0));
-                
-                // Handle constant columns (where min == max)
-                if (max - min).abs() < f64::EPSILON {
-                    // For constant columns, set values to 0.5 (middle of range)
+                    
+                    // Save params for denormalization (mean = value, std = 1.0)
+                    norm_params.insert(col.to_string(), (0.0, 0.0, min, 1.0));
+                } else {
+                    // For constant non-price columns, set values to 0.5
                     let constant_series = Series::new(col.into(), vec![0.5f64; df.height()]);
                     df.replace(col, constant_series)?;
-                    continue;
+                    
+                    // Save params for denormalization (min = 0.0, max = 1.0)
+                    norm_params.insert(col.to_string(), (0.0, 1.0, 0.0, 0.0));
+                }
+                continue;
+            }
+            
+            if has_nans {
+                // Try to fix NaN values in this column
+                let mut column_as_vec: Vec<f64> = f_series
+                    .into_iter()
+                    .map(|v| v.unwrap_or(0.0))
+                    .collect();
+                
+                // Replace NaN values with 0.0
+                for val in &mut column_as_vec {
+                    if val.is_nan() {
+                        *val = 0.0;
+                    }
                 }
                 
-                // Apply min-max scaling for non-constant columns
-                let normalized: Vec<f64> = f_series.into_iter()
-                    .map(|opt_v| {
-                        if let Some(v) = opt_v {
-                            (v - min) / (max - min)
-                        } else {
-                            0.5 // Default for missing values
-                        }
-                    })
-                    .collect();
-                df.replace(col, Series::new(col.into(), normalized))?;
+                // Replace the column with cleaned values
+                df.replace(col, Series::new(col.into(), column_as_vec))?;
+                
+                // Get the clean series again
+                let f_series = df.column(col)?.f64()?;
+                
+                // For price columns, use z-score normalization
+                if price_columns.contains(&col) {
+                    let mean = f_series.mean().unwrap_or(0.0);
+                    let std = f_series.std(1).unwrap_or(1.0);
+                    
+                    // Ensure std is not zero or NaN
+                    let std = if std.is_nan() || std.abs() < 1e-10 { 1.0 } else { std };
+                    
+                    // Save params for denormalization
+                    norm_params.insert(col.to_string(), (0.0, 0.0, mean, std));
+                    
+                    // Apply z-score normalization
+                    let normalized: Vec<f64> = f_series.into_iter()
+                        .map(|opt_v| {
+                            if let Some(v) = opt_v {
+                                if v.is_nan() { 0.0 } else { (v - mean) / std }
+                            } else {
+                                0.0 // Default for missing values
+                            }
+                        })
+                        .collect();
+                    df.replace(col, Series::new(col.into(), normalized))?;
+                } 
+                // For other columns, use min-max scaling
+                else {
+                    let min = f_series.min().unwrap_or(0.0);
+                    let max = f_series.max().unwrap_or(1.0);
+                    
+                    // Ensure min and max are valid
+                    let (min, max) = if min.is_nan() || max.is_nan() || (max - min).abs() < 1e-10 {
+                        (0.0, 1.0) // Default values if invalid
+                    } else {
+                        (min, max)
+                    };
+                    
+                    // Save params for denormalization
+                    norm_params.insert(col.to_string(), (min, max, 0.0, 0.0));
+                    
+                    // Apply min-max scaling
+                    let normalized: Vec<f64> = f_series.into_iter()
+                        .map(|opt_v| {
+                            if let Some(v) = opt_v {
+                                if v.is_nan() { 0.5 } else { (v - min) / (max - min) }
+                            } else {
+                                0.5 // Default for missing values
+                            }
+                        })
+                        .collect();
+                    df.replace(col, Series::new(col.into(), normalized))?;
+                }
+            } else {
+                // No NaN values, proceed with normal normalization
+                
+                // For price columns, use z-score normalization
+                if price_columns.contains(&col) {
+                    let mean = f_series.mean().unwrap_or(0.0);
+                    let std = f_series.std(1).unwrap_or(1.0);
+                    
+                    // Ensure std is not zero or NaN
+                    let std = if std.is_nan() || std.abs() < 1e-10 { 1.0 } else { std };
+                    
+                    // Save params for denormalization
+                    norm_params.insert(col.to_string(), (0.0, 0.0, mean, std));
+                    
+                    // Apply z-score normalization
+                    let normalized: Vec<f64> = f_series.into_iter()
+                        .map(|opt_v| {
+                            if let Some(v) = opt_v {
+                                (v - mean) / std
+                            } else {
+                                0.0 // Default for missing values
+                            }
+                        })
+                        .collect();
+                    df.replace(col, Series::new(col.into(), normalized))?;
+                } 
+                // For other columns, use min-max scaling
+                else {
+                    let min = f_series.min().unwrap_or(0.0);
+                    let max = f_series.max().unwrap_or(1.0);
+                    
+                    // Handle constant columns (where min == max)
+                    let (min, max) = if (max - min).abs() < 1e-10 {
+                        (0.0, 1.0) // Default range if constant
+                    } else {
+                        (min, max)
+                    };
+                    
+                    // Save params for denormalization
+                    norm_params.insert(col.to_string(), (min, max, 0.0, 0.0));
+                    
+                    // Apply min-max scaling
+                    let normalized: Vec<f64> = f_series.into_iter()
+                        .map(|opt_v| {
+                            if let Some(v) = opt_v {
+                                (v - min) / (max - min)
+                            } else {
+                                0.5 // Default for missing values
+                            }
+                        })
+                        .collect();
+                    df.replace(col, Series::new(col.into(), normalized))?;
+                }
             }
         }
     }
@@ -803,7 +902,19 @@ pub fn check_for_nans(df: &DataFrame, columns: &[&str]) -> PolarsResult<usize> {
     
     for &col in columns {
         if let Ok(series) = df.column(col) {
-            if matches!(series.dtype(), DataType::Float64 | DataType::Int64) {
+            if let Ok(f64_series) = series.f64() {
+                // Count both null values and explicit NaN values
+                nan_count += f64_series.null_count();
+                
+                // Also check for explicit NaNs
+                for opt_val in f64_series.iter() {
+                    if let Some(val) = opt_val {
+                        if val.is_nan() {
+                            nan_count += 1;
+                        }
+                    }
+                }
+            } else if matches!(series.dtype(), DataType::Int64) {
                 nan_count += series.null_count();
             }
         } else {
@@ -853,4 +964,38 @@ pub fn build_enhanced_lstm_model(
     // Create tensors using normalized data with extended features
     dataframe_to_tensors::<BurnBackend>(&df_norm, crate::constants::SEQUENCE_LENGTH, forecast_horizon, &device, true, None)
         .map_err(|e| anyhow::anyhow!(e.to_string()))
+}
+
+// Add Gaussian noise to the data for augmentation
+pub fn add_augmentation_noise(
+    mut features: Vec<f64>,
+    noise_level: f64,
+    seed: Option<u64>,
+) -> Vec<f64> {
+    // Set up the RNG, with a seed if provided for reproducibility
+    let mut rng = if let Some(seed_value) = seed {
+        StdRng::seed_from_u64(seed_value)
+    } else {
+        // Just use a fixed seed as a fallback
+        StdRng::seed_from_u64(42)
+    };
+
+    // Compute standard deviation for each feature
+    let mean = features.iter().sum::<f64>() / features.len() as f64;
+    let variance = features
+        .iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum::<f64>()
+        / features.len() as f64;
+    let std = variance.sqrt() * noise_level;
+
+    // Add noise to each feature value
+    features
+        .iter_mut()
+        .for_each(|x| {
+            let noise = rng.random_range(-std..std);
+            *x += noise;
+        });
+
+    features
 }
