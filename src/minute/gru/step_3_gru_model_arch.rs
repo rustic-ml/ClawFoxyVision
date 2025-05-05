@@ -6,7 +6,26 @@ use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig};
 use crate::minute::gru::step_2_gru_cell::GRU;
 use crate::constants::{DEFAULT_DROPOUT, L2_REGULARIZATION};
 
-/// TimeSeriesGru architecture for forecasting
+/// # TimeSeriesGru Architecture
+///
+/// A GRU-based architecture specialized for time series forecasting. It combines a GRU layer
+/// with attention mechanisms and multiple dropout layers to improve prediction accuracy.
+///
+/// ## Architecture Overview
+///
+/// 1. **Input Layer**: Accepts time series features in shape [batch_size, seq_len, input_size]
+/// 2. **GRU Layer**: Processes sequential data, with optional bidirectional processing
+/// 3. **Attention Layer**: Learns to focus on the most important time steps
+/// 4. **Dropout Layers**: Two dropout layers to prevent overfitting
+/// 5. **Output Layer**: Projects to the desired forecast horizon dimension
+///
+/// ## Key Features
+///
+/// - **Bidirectional Processing**: Can process the time series in both directions
+/// - **Attention Mechanism**: Helps the model focus on relevant time steps
+/// - **Regularization**: L2 regularization and dropout to prevent overfitting
+/// - **Multiple Loss Functions**: Supports both MSE and Huber loss
+///
 #[derive(Module, Debug)]
 pub struct TimeSeriesGru<B: Backend> {
     input_size: usize,
@@ -21,7 +40,21 @@ pub struct TimeSeriesGru<B: Backend> {
 }
 
 impl<B: Backend> TimeSeriesGru<B> {
-    /// Create a new TimeSeriesGru model
+    /// Creates a new TimeSeriesGru model configured for time series forecasting
+    ///
+    /// # Arguments
+    ///
+    /// * `input_size` - Number of input features per time step
+    /// * `hidden_size` - Dimension of the GRU hidden state
+    /// * `output_size` - Number of output features (forecast horizon)
+    /// * `num_layers` - Number of stacked GRU layers (note: currently only single layer is implemented)
+    /// * `bidirectional` - Whether to use bidirectional GRU
+    /// * `dropout_prob` - Dropout probability for regularization
+    /// * `device` - Device to allocate tensors on
+    ///
+    /// # Returns
+    ///
+    /// A configured TimeSeriesGru model ready for training or inference
     pub fn new(
         input_size: usize,
         hidden_size: usize,
@@ -74,7 +107,25 @@ impl<B: Backend> TimeSeriesGru<B> {
         self.regularization
     }
 
-    /// Forward pass of the GRU model with added dropout
+    /// Performs forward pass through the GRU model to generate predictions
+    ///
+    /// # Process Flow
+    ///
+    /// 1. Pass input through the GRU layer
+    /// 2. Apply attention mechanism to focus on important time steps
+    /// 3. Extract the relevant time step (currently the last one)
+    /// 4. Apply dropout for regularization
+    /// 5. Project to output dimension
+    /// 6. Apply second dropout
+    /// 7. Clamp values to [0,1] range to match normalized target
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Input tensor of shape [batch_size, seq_len, input_size]
+    ///
+    /// # Returns
+    ///
+    /// Predictions tensor of shape [batch_size, output_size]
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
         // Apply GRU cell to the sequence
         let gru_out = self.gru.forward(x);
@@ -104,7 +155,9 @@ impl<B: Backend> TimeSeriesGru<B> {
         dropped2.clamp(0.0, 1.0)
     }
     
-    /// Calculates L2 regularization penalty
+    /// Calculates L2 regularization penalty for the model weights
+    ///
+    /// This helps prevent overfitting by penalizing large weight values
     pub fn l2_penalty(&self) -> Tensor<B, 1> {
         let device = &self.output.weight.device();
         
@@ -121,7 +174,10 @@ impl<B: Backend> TimeSeriesGru<B> {
         squared_sum * self.regularization
     }
     
-    /// Huber loss function for more robust regression
+    /// Huber loss function for more robust regression against outliers
+    ///
+    /// Combines MSE for small errors and MAE (Mean Absolute Error) for large errors,
+    /// making it less sensitive to outliers than pure MSE.
     pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, _delta: f64) -> Tensor<B, 0> {
         // Compute mean squared error
         let diff = pred - target;
@@ -139,6 +195,9 @@ impl<B: Backend> TimeSeriesGru<B> {
     }
     
     /// Calculate MSE loss with L2 regularization
+    ///
+    /// The standard loss function for regression problems, with added
+    /// L2 regularization to prevent overfitting.
     pub fn mse_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 0> {
         let diff = pred - target;
         let squared_diff = diff.clone() * diff;
@@ -154,7 +213,20 @@ impl<B: Backend> TimeSeriesGru<B> {
     }
 }
 
-/// Attention mechanism to weight the importance of different timesteps
+/// # Attention Mechanism
+///
+/// Implements a self-attention mechanism for time series that helps the model
+/// focus on the most relevant time steps when making predictions.
+///
+/// ## How Attention Works
+///
+/// 1. Projects the input into Query, Key, and Value spaces
+/// 2. Computes similarity between Query and Key to get attention weights
+/// 3. Scales and applies softmax to get probability distribution
+/// 4. Uses weights to create a weighted sum of Value vectors
+///
+/// This implementation follows the general self-attention pattern used in
+/// transformer architectures, but adapted for time series data.
 #[derive(Module, Debug)]
 pub struct Attention<B: Backend> {
     query: Linear<B>,
@@ -163,7 +235,16 @@ pub struct Attention<B: Backend> {
 }
 
 impl<B: Backend> Attention<B> {
-    /// Create a new attention module
+    /// Creates a new attention module
+    ///
+    /// # Arguments
+    ///
+    /// * `hidden_dim` - Dimension of the hidden states to attend to
+    /// * `device` - Device to allocate tensors on
+    ///
+    /// # Returns
+    ///
+    /// An initialized Attention module
     pub fn new(hidden_dim: usize, device: &B::Device) -> Self {
         let query_config = LinearConfig::new(hidden_dim, hidden_dim);
         let key_config = LinearConfig::new(hidden_dim, hidden_dim);
@@ -176,7 +257,15 @@ impl<B: Backend> Attention<B> {
         }
     }
 
-    /// Forward pass through the attention mechanism
+    /// Applies the attention mechanism to the input sequence
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Input tensor of shape [batch_size, seq_len, hidden_dim]
+    ///
+    /// # Returns
+    ///
+    /// Attention-weighted sequence of shape [batch_size, seq_len, hidden_dim]
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         // Get dimensions
         let batch_size = x.dims()[0];

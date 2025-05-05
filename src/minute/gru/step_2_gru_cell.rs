@@ -3,7 +3,33 @@ use burn::module::Module;
 use burn::tensor::{backend::Backend, Tensor, activation};
 use burn::nn::{Linear, LinearConfig};
 
-/// GRU Cell implementation
+/// # GRU Cell Implementation
+///
+/// The Gated Recurrent Unit (GRU) is a type of recurrent neural network that is more
+/// efficient than LSTM while offering similar performance for many tasks. It was introduced
+/// by Cho et al. in 2014.
+///
+/// ## Architecture
+///
+/// A GRU has two gates:
+/// - **Update Gate (z)**: Controls how much of the previous hidden state should be kept
+/// - **Reset Gate (r)**: Controls how much of the previous hidden state should influence the new candidate state
+///
+/// Unlike LSTM which has separate cell and hidden states, GRU combines them into a single hidden state.
+///
+/// ## Mathematical Representation
+///
+/// For input x_t at time t and previous hidden state h_(t-1):
+///
+/// 1. Update gate: z_t = σ(W_z · x_t + U_z · h_(t-1))
+/// 2. Reset gate: r_t = σ(W_r · x_t + U_r · h_(t-1))
+/// 3. Candidate state: n_t = tanh(W_n · x_t + r_t ∘ (U_n · h_(t-1)))
+/// 4. New hidden state: h_t = (1 - z_t) ∘ n_t + z_t ∘ h_(t-1)
+///
+/// Where:
+/// - σ is the sigmoid function
+/// - ∘ denotes element-wise multiplication
+///
 #[derive(Module, Debug)]
 pub struct GRU<B: Backend> {
     input_size: usize,
@@ -21,7 +47,19 @@ pub struct GRU<B: Backend> {
 }
 
 impl<B: Backend> GRU<B> {
-    /// Create a new GRU cell
+    /// Create a new GRU cell with specified dimensions
+    ///
+    /// # Arguments
+    ///
+    /// * `input_size` - Number of expected features in the input
+    /// * `hidden_size` - Number of features in the hidden state
+    /// * `num_layers` - Number of recurrent layers (currently only single layer is fully implemented)
+    /// * `bidirectional` - If true, becomes a bidirectional GRU
+    /// * `device` - The device to allocate tensors on
+    ///
+    /// # Returns
+    ///
+    /// A new GRU cell instance with the specified configuration
     pub fn new(
         input_size: usize,
         hidden_size: usize,
@@ -65,7 +103,17 @@ impl<B: Backend> GRU<B> {
         }
     }
     
-    /// Process a single direction of the GRU
+    /// Process a sequence in a single direction (forward or backward)
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Input tensor of shape [batch_size, seq_len, input_size]
+    /// * `reverse` - If true, process the sequence backwards
+    /// * `device` - Device to allocate tensors on
+    ///
+    /// # Returns
+    ///
+    /// Output tensor containing hidden states for each time step with shape [batch_size, seq_len, hidden_size]
     fn process_direction(
         &self,
         x: Tensor<B, 3>,
@@ -91,6 +139,7 @@ impl<B: Backend> GRU<B> {
         // Process the sequence
         for t in 0..seq_len {
             // Get the input at the current time step
+            // If processing in reverse, flip the sequence order
             let time_idx = if reverse { seq_len - 1 - t } else { t };
             let x_t = x.clone().narrow(1, time_idx, 1).reshape([batch_size, self.input_size]);
             
@@ -121,6 +170,7 @@ impl<B: Backend> GRU<B> {
             let n = activation::tanh(n_input + (r * n_hidden)); // candidate hidden state
             
             // Update hidden state using update gate
+            // h = (1-z) * n + z * h - this is the key GRU equation
             h = (Tensor::ones_like(&z) - z.clone()) * n + z * h;
             
             // Store the hidden state in the output sequence
@@ -133,7 +183,17 @@ impl<B: Backend> GRU<B> {
         output_sequence
     }
     
-    /// Forward pass through the GRU
+    /// Forward pass through the GRU for the entire input sequence
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Input tensor of shape [batch_size, seq_len, input_size]
+    ///
+    /// # Returns
+    ///
+    /// Output tensor containing hidden states for each time step.
+    /// If bidirectional, the output shape is [batch_size, seq_len, 2*hidden_size],
+    /// otherwise it's [batch_size, seq_len, hidden_size].
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let device = x.device();
         let batch_size = x.dims()[0];

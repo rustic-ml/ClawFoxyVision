@@ -16,23 +16,50 @@ use crate::minute::lstm::step_1_tensor_preparation::{
 use crate::minute::gru::step_6_model_serialization::ModelMetadata;
 use crate::constants::SEQUENCE_LENGTH;
 
-/// Struct for configuring GRU training
+/// # GRU Training Configuration
+///
+/// Configuration parameters for training a GRU time series forecasting model.
+/// These parameters control various aspects of the training process, including
+/// optimization settings, model architecture, and regularization.
 #[derive(Clone, Debug)]
 pub struct TrainingConfig {
+    /// Learning rate for the optimizer
     pub learning_rate: f64,
+    
+    /// Number of samples processed in each training iteration
     pub batch_size: usize,
+    
+    /// Number of complete passes through the training dataset
     pub epochs: usize,
+    
+    /// Fraction of data to use for testing/validation (0.0 to 1.0)
     pub test_split: f64,
+    
+    /// Dropout probability for regularization (0.0 to 1.0)
     pub dropout: f64,
+    
+    /// Number of epochs with no improvement after which training will be stopped
     pub patience: usize,
+    
+    /// Minimum change in loss to qualify as an improvement for early stopping
     pub min_delta: f64,
+    
+    /// Whether to use Huber loss (true) or MSE loss (false)
     pub use_huber_loss: bool,
+    
+    /// Number of epochs between model checkpoints
     pub checkpoint_epochs: usize,
+    
+    /// Whether to use bidirectional GRU
     pub bidirectional: bool,
+    
+    /// Number of stacked GRU layers
     pub num_layers: usize,
 }
 
 impl Default for TrainingConfig {
+    /// Creates a default training configuration with reasonable values
+    /// for time series forecasting.
     fn default() -> Self {
         Self {
             learning_rate: 0.001,
@@ -50,7 +77,10 @@ impl Default for TrainingConfig {
     }
 }
 
-/// Simple training step without using burn::train::TrainStep
+/// # GRU Trainer
+///
+/// Handles the training process for the TimeSeriesGru model.
+/// This is a simplified training implementation without the full burn::train framework.
 #[derive(Clone)]
 pub struct TimeSeriesGruTrainer<B: Backend> {
     optimizer: AdamConfig,
@@ -59,7 +89,16 @@ pub struct TimeSeriesGruTrainer<B: Backend> {
 }
 
 impl<B: Backend> TimeSeriesGruTrainer<B> {
-    /// Create a new TimeSeriesGruTrainer
+    /// Creates a new GRU trainer with the specified configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Training configuration parameters
+    /// * `device` - Device to run training on
+    ///
+    /// # Returns
+    ///
+    /// A configured TimeSeriesGruTrainer
     pub fn new(config: TrainingConfig, device: B::Device) -> Self {
         // Configure the optimizer with default settings
         let optimizer = AdamConfig::new();
@@ -71,7 +110,17 @@ impl<B: Backend> TimeSeriesGruTrainer<B> {
         }
     }
     
-    /// Perform a single training step
+    /// Performs a single training step (forward pass, loss computation)
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - The GRU model to train
+    /// * `features` - Input features tensor [batch_size, seq_len, input_dim]
+    /// * `targets` - Target values tensor [batch_size, output_dim]
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing (updated model, loss value)
     pub fn step(&self, model: &TimeSeriesGru<B>, features: Tensor<B, 3>, targets: Tensor<B, 2>) -> (TimeSeriesGru<B>, f64) {
         // Forward pass
         let outputs = model.forward(features);
@@ -95,7 +144,22 @@ impl<B: Backend> TimeSeriesGruTrainer<B> {
     }
 }
 
-/// Train a TimeSeriesGru model using the provided training data and configuration
+/// # Train GRU Model
+///
+/// Trains a TimeSeriesGru model using the provided input data and configuration.
+/// This function handles the full training loop, including batch creation, 
+/// optimization steps, and early stopping.
+///
+/// # Arguments
+///
+/// * `features` - Input features tensor [batch_count, seq_len, input_dim]
+/// * `targets` - Target values tensor [batch_count, output_dim]
+/// * `config` - Training configuration
+/// * `device` - Device to train on
+///
+/// # Returns
+///
+/// A Result containing the trained model and its metadata
 pub fn train_gru_model<B: Backend>(
     features: Tensor<B, 3>,
     targets: Tensor<B, 2>,
@@ -205,7 +269,19 @@ pub fn train_gru_model<B: Backend>(
     Ok((model, metadata))
 }
 
-/// Evaluate a model on the test dataset
+/// # Evaluate GRU Model
+///
+/// Evaluates a trained GRU model on test data and returns the Mean Squared Error.
+///
+/// # Arguments
+///
+/// * `model` - The trained GRU model to evaluate
+/// * `test_features` - Test features tensor
+/// * `test_targets` - Test targets tensor
+///
+/// # Returns
+///
+/// The Mean Squared Error (MSE) on the test data as a Result
 pub fn evaluate_model<B: Backend>(
     model: &TimeSeriesGru<B>,
     test_features: Tensor<B, 3>,

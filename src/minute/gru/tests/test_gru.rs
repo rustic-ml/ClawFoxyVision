@@ -402,19 +402,57 @@ fn test_gru_with_real_data() {
     type TestBackend = LibTorch<f32>;
     let device = <TestBackend as Backend>::Device::default();
     
-    // Normalize features
-    let mut normalized_df = df.clone();
-    normalize_features(&mut normalized_df, &["close", "open", "high", "low"], false, false).unwrap();
+    // Define the four basic features we'll use for testing
+    let feature_columns = vec!["close", "open", "high", "low"];
     
-    // Prepare tensors
-    let (features, targets) = crate::minute::lstm::step_1_tensor_preparation::dataframe_to_tensors::<TestBackend>(
-        &normalized_df,
-        5, // sequence_length
-        1, // forecast_horizon
-        &device,
-        false, // use_extended_features
-        None,  // batch_size
-    ).unwrap();
+    // Normalize features - but only normalize price columns
+    let mut normalized_df = df.clone();
+    normalize_features(&mut normalized_df, &feature_columns, false, false).unwrap();
+    
+    // Create a custom function that works with our test data
+    // Rather than using the standard dataframe_to_tensors that expects all technical indicators
+    let sequence_length = 5;
+    let forecast_horizon = 1;
+    
+    // Manually create feature and target tensors from our dataframe
+    let n_rows = normalized_df.height();
+    let n_features = feature_columns.len();
+    
+    // Need at least sequence_length + forecast_horizon rows
+    assert!(n_rows > sequence_length + forecast_horizon);
+    
+    let max_sequences = n_rows - sequence_length - forecast_horizon + 1;
+    let mut feature_data = Vec::with_capacity(max_sequences * sequence_length * n_features);
+    let mut target_data = Vec::with_capacity(max_sequences * forecast_horizon);
+    
+    // Extract features and targets
+    for seq_idx in 0..max_sequences {
+        // Features: sequence_length timesteps of all features
+        for row_idx in seq_idx..(seq_idx + sequence_length) {
+            for &col in &feature_columns {
+                let value = normalized_df.column(col).unwrap()
+                    .f64().unwrap()
+                    .get(row_idx).unwrap_or(0.0) as f32;
+                feature_data.push(value);
+            }
+        }
+        
+        // Target: forecast_horizon timesteps of close price
+        for h in 0..forecast_horizon {
+            let target_idx = seq_idx + sequence_length + h;
+            let target = normalized_df.column("close").unwrap()
+                .f64().unwrap()
+                .get(target_idx).unwrap_or(0.0) as f32;
+            target_data.push(target);
+        }
+    }
+    
+    // Create tensors using the burn API
+    let features = Tensor::<TestBackend, 1>::from_floats(feature_data.as_slice(), &device)
+        .reshape([max_sequences, sequence_length, n_features]);
+    
+    let targets = Tensor::<TestBackend, 1>::from_floats(target_data.as_slice(), &device)
+        .reshape([max_sequences, forecast_horizon]);
     
     // Create a GRU model
     let model = TimeSeriesGru::<TestBackend>::new(

@@ -10,7 +10,28 @@ use crate::minute::lstm::step_1_tensor_preparation::{
 };
 use crate::constants::{TECHNICAL_INDICATORS, EXTENDED_INDICATORS};
 
-/// Single-step prediction from the GRU model
+/// # Make Single-Step Prediction
+///
+/// Generates a single-step ahead prediction from a trained GRU model.
+/// This function takes the most recent data window and predicts the next value.
+///
+/// ## Process
+///
+/// 1. Verifies the input DataFrame contains all required features
+/// 2. Creates tensors appropriate for the GRU model
+/// 3. Uses the last sequence from the data for prediction
+/// 4. Returns the predicted value as a normalized value between 0 and 1
+///
+/// # Arguments
+///
+/// * `model` - Trained GRU model
+/// * `df` - DataFrame containing time series features
+/// * `device` - Device to run prediction on
+/// * `use_extended_features` - Whether to use the extended set of features
+///
+/// # Returns
+///
+/// The single-step prediction as a floating-point value (normalized)
 pub fn predict_next_step<B: Backend>(
     model: &TimeSeriesGru<B>,
     df: DataFrame,
@@ -61,7 +82,30 @@ pub fn predict_next_step<B: Backend>(
     Ok(value as f64)
 }
 
-/// Generate multiple future predictions using recursive forecasting
+/// # Generate Multi-Step Forecasts
+///
+/// Generates predictions for multiple steps into the future using a recursive approach.
+/// Each prediction is fed back into the model to generate the next prediction.
+///
+/// ## Recursive Forecasting
+///
+/// This method uses the model's own predictions as inputs for future predictions:
+/// 1. Make prediction for t+1
+/// 2. Add prediction to input data
+/// 3. Use updated data to predict t+2
+/// 4. Repeat for the desired forecast horizon
+///
+/// # Arguments
+///
+/// * `model` - Trained GRU model
+/// * `df` - DataFrame containing time series features
+/// * `horizon` - Number of future steps to predict
+/// * `device` - Device to run prediction on
+/// * `use_extended_features` - Whether to use the extended set of features
+///
+/// # Returns
+///
+/// A vector of predictions for each requested future time step
 pub fn predict_multiple_steps<B: Backend>(
     model: &TimeSeriesGru<B>,
     df: DataFrame,
@@ -136,7 +180,22 @@ pub fn predict_multiple_steps<B: Backend>(
     Ok(predictions)
 }
 
-/// Compare GRU model prediction with LSTM
+/// # Compare GRU and LSTM Models
+///
+/// Compares predictions from GRU and LSTM models on the same dataset.
+/// This is useful for evaluating the relative performance of the two model types.
+///
+/// # Arguments
+///
+/// * `gru_model` - Trained GRU model
+/// * `lstm_model` - Trained LSTM model
+/// * `df` - DataFrame containing time series features
+/// * `horizon` - Number of future steps to predict
+/// * `device` - Device to run prediction on
+///
+/// # Returns
+///
+/// A tuple of (GRU predictions, LSTM predictions) with the same horizon
 pub fn compare_with_lstm<B: Backend>(
     gru_model: &TimeSeriesGru<B>,
     lstm_model: &crate::minute::lstm::step_3_lstm_model_arch::TimeSeriesLstm<B>,

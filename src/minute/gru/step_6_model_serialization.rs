@@ -11,21 +11,69 @@ use std::io::Write;
 // Internal imports
 use super::step_3_gru_model_arch::TimeSeriesGru;
 
-/// Metadata for TimeSeriesGru model
+/// # GRU Model Metadata
+///
+/// Contains essential information about a trained GRU model, including
+/// its architecture, training parameters, and creation timestamp.
+///
+/// This metadata is saved alongside the model to allow proper reconstruction
+/// of the model architecture when loading from disk, and to maintain a record
+/// of the training configuration used.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ModelMetadata {
+    /// Number of input features per time step
     pub input_size: usize,
+    
+    /// Dimension of the GRU hidden state
     pub hidden_size: usize,
+    
+    /// Number of output features (typically forecast horizon)
     pub output_size: usize,
+    
+    /// Number of stacked GRU layers
     pub num_layers: usize,
+    
+    /// Whether the model is bidirectional
     pub bidirectional: bool,
+    
+    /// Dropout probability used during training
     pub dropout: f64,
+    
+    /// Learning rate used during training
     pub learning_rate: f64,
+    
+    /// Unix timestamp when the model was saved
     pub timestamp: u64,
+    
+    /// Human-readable description of the model
     pub description: String,
 }
 
-/// Save a trained TimeSeriesGru model and its metadata to file
+/// # Save GRU Model
+///
+/// Saves a trained TimeSeriesGru model and its metadata to disk.
+/// The model is saved with a timestamp-based filename to ensure uniqueness.
+///
+/// ## File Format
+///
+/// The function creates two files:
+/// 1. A binary file (.bin) containing the serialized model
+/// 2. A JSON file (.json) containing the model metadata
+///
+/// ## Filename Format
+///
+/// Files are saved with the pattern: `{name}_{timestamp}.bin` and `{name}_{timestamp}_meta.json`
+/// where timestamp is formatted as YYYYMMDD_HHMMSS.
+///
+/// # Arguments
+///
+/// * `model` - The trained GRU model to save
+/// * `metadata` - Model metadata containing architectural and training parameters
+/// * `path` - Target path where the model should be saved
+///
+/// # Returns
+///
+/// The final path where the model was saved
 pub fn save_model<B: Backend>(
     model: &TimeSeriesGru<B>,
     metadata: ModelMetadata,
@@ -65,7 +113,27 @@ pub fn save_model<B: Backend>(
     Ok(full_path)
 }
 
-/// Load a trained TimeSeriesGru model from file
+/// # Load GRU Model
+///
+/// Loads a TimeSeriesGru model and its metadata from disk.
+///
+/// ## File Format
+///
+/// The function expects two files:
+/// 1. A binary file (.bin) containing the serialized model
+/// 2. A JSON file (.json) containing the model metadata
+///
+/// If the model file can't be directly loaded, the function recreates the model
+/// with the correct architecture based on the metadata.
+///
+/// # Arguments
+///
+/// * `path` - Path to the saved model file
+/// * `device` - Device to load the model onto
+///
+/// # Returns
+///
+/// A Result containing the loaded model and its metadata
 pub fn load_model<B: Backend>(
     path: &Path,
     device: &B::Device,
