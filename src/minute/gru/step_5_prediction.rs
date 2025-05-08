@@ -152,7 +152,7 @@ pub fn predict_multiple_steps<B: Backend>(
                 next_row_values.push(Series::new((*col_name).into(), vec![next_value]).into());
             } else if height > 0 {
                 // Use the last value for other columns - this is a simplification
-                let value = col.get(height - 1);
+                let _value = col.get(height - 1);
                 
                 if let Ok(series) = df.column(col_name) {
                     if let Ok(f64_series) = series.f64() {

@@ -28,6 +28,8 @@ pub struct TrainingConfig {
     pub min_delta: f64,
     pub dropout: f64,
     pub use_huber_loss: bool,
+    pub display_metrics: bool,
+    pub display_interval: usize,
 }
 
 impl Default for TrainingConfig {
@@ -41,6 +43,8 @@ impl Default for TrainingConfig {
             min_delta: 0.001,  // Minimum improvement threshold
             dropout: 0.3,      // Default higher dropout
             use_huber_loss: true, // Use Huber loss by default
+            display_metrics: true,
+            display_interval: 1,
         }
     }
 }
@@ -130,7 +134,7 @@ pub fn train_model(
     let mut best_model = model.clone();
     let mut best_val_rmse = f64::INFINITY;
     let mut epochs_no_improve = 0;
-    let mut current_lr = config.learning_rate;
+    let mut _current_lr = config.learning_rate;
 
     // Initialize optimizer
     let mut optimizer = AdamConfig::new().init();
@@ -139,9 +143,9 @@ pub fn train_model(
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
     for epoch in 1..=config.epochs {
         // Update learning rate (linear decay)
-        current_lr = config.learning_rate * (1.0 - (epoch as f64) / (config.epochs as f64));
-        if current_lr < 1e-8 {
-            current_lr = 1e-8;
+        _current_lr = config.learning_rate * (1.0 - (epoch as f64) / (config.epochs as f64));
+        if _current_lr < 1e-8 {
+            _current_lr = 1e-8;
         }
 
         let feature_batches = get_batches(&train_features, config.batch_size);
@@ -160,9 +164,9 @@ pub fn train_model(
             // Backward pass and optimizer step
             let grads = loss_tensor.backward();
             let grads = GradientsParams::from_grads(grads, &model);
-            model = optimizer.step(current_lr, model, grads);
+            model = optimizer.step(_current_lr, model, grads);
         }
-        let avg_loss = epoch_loss / feature_batches.len() as f64;
+        let _avg_loss = epoch_loss / feature_batches.len() as f64;
         // Per-epoch logging disabled for speed
 
         // Validation pass and logging

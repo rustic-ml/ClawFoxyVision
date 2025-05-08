@@ -44,6 +44,7 @@ pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
 
 fn main() -> PolarsResult<()> {
     // Use CPU backend with NdArray (Mali GPU not CUDA)
+    #[allow(dead_code)]
     type BurnBackend = Autodiff<NdArray<f32>>;
     let _device = NdArrayDevice::default();
     println!("Using device: CPU NdArray");
@@ -54,6 +55,15 @@ fn main() -> PolarsResult<()> {
     let args: Vec<String> = env::args().collect();
     let ticker = args.get(1).map(|s| s.to_uppercase()).unwrap_or("AAPL".to_string());
     let model_type = args.get(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
+    
+    if model_type != "lstm" && model_type != "gru" {
+        eprintln!("Error: model_type must be either 'lstm' or 'gru'");
+        eprintln!("Usage: cargo run -- [ticker] [model_type]");
+        eprintln!("Example: cargo run -- AAPL lstm");
+        eprintln!("Example: cargo run -- AAPL gru");
+        return Err(PolarsError::ComputeError("Invalid model type".into()));
+    }
+    
     println!("Using ticker: {} | model_type: {} | backend: NdArray", ticker, model_type);
 
     let df = generate_stock_dataframe(ticker.as_str())?;
@@ -80,7 +90,7 @@ fn main() -> PolarsResult<()> {
 
     // Generate predictions with timing
     let t_pred_start = Instant::now();
-    match generate_predictions(df, &train_df) {
+    match generate_predictions(df, &train_df, model_type.as_str()) {
         Ok(_) => {
             println!("Prediction generation completed successfully.");
             let pred_dur = t_pred_start.elapsed().as_secs_f64() / 60.0;
@@ -93,131 +103,284 @@ fn main() -> PolarsResult<()> {
 }
 
 fn train_and_evaluate(train_df: DataFrame, test_df: DataFrame, ticker: &str, model_type: &str) -> Result<std::path::PathBuf, PolarsError> {
-    // Initialize device for training (CPU)
+    // Define BurnBackend inside the function scope to avoid the unused warning
     type BurnBackend = Autodiff<NdArray<f32>>;
+
+    // Initialize device for training (CPU)
     let device = NdArrayDevice::default();
 
-    // Configure training (with early stopping parameters)
-    let training_config = minute::lstm::step_4_train_model::TrainingConfig {
-        learning_rate: 0.001,
-        batch_size: 32,
-        epochs: 10,
-        test_split: 0.2,
-        // Enhanced dropout
-        dropout: constants::DEFAULT_DROPOUT,
-        // Early stopping settings
-        patience: minute::lstm::step_4_train_model::TrainingConfig::default().patience,
-        min_delta: minute::lstm::step_4_train_model::TrainingConfig::default().min_delta,
-        // Use Huber loss to be more robust
-        use_huber_loss: true,
-        // Use default for any additional fields
-        ..Default::default()
-    };
+    // Return path placeholder that will be replaced with the actual path
+    let mut model_path = std::path::PathBuf::new();
+    
+    if model_type == "lstm" {
+        // Configure LSTM training (with early stopping parameters)
+        let training_config = minute::lstm::step_4_train_model::TrainingConfig {
+            learning_rate: 0.001,
+            batch_size: 32,
+            epochs: 10,
+            test_split: 0.2,
+            // Enhanced dropout
+            dropout: constants::DEFAULT_DROPOUT,
+            // Early stopping settings
+            patience: minute::lstm::step_4_train_model::TrainingConfig::default().patience,
+            min_delta: minute::lstm::step_4_train_model::TrainingConfig::default().min_delta,
+            // Use Huber loss to be more robust
+            use_huber_loss: true,
+            // Use default for any additional fields
+            ..Default::default()
+        };
 
-    let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
-    let model_path = crate::util::model_utils::get_model_path(ticker, model_type).join(model_name);
-    let current_version = env!("CARGO_PKG_VERSION");
-
-    if crate::util::model_utils::is_model_version_current(&model_path, current_version) {
         let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
-        
-        // Load the model
-        let (_trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
-            ticker,
-            model_type,
-            &model_name,
-            &device,
-        )
-        .expect("Failed to load model");
-        println!("Loaded existing model with current version: {}", current_version);
-    } else {
-        // Train model
-        println!("Starting model training...");
-        let ep_start = Instant::now();
-        let (_trained_model, _) =
-            minute::lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, 390)
-                .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
-        println!("Trained and saved new model. Epoch took {:?}", ep_start.elapsed());
-    }
+        model_path = crate::util::model_utils::get_model_path(ticker, model_type).join(model_name.clone());
+        let current_version = env!("CARGO_PKG_VERSION");
 
-    // Evaluate model
-    println!("Evaluating model on test data...");
-    let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);   
-    // Load the trained model for evaluation (ensures `trained_model` is in scope)
-    let (_trained_model, _metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
-        ticker,
-        model_type,
-        &model_name,
-        &device
-    ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
-    // Perform evaluation
-    let forecast_horizon = 390; // full trading day in minutes
-    let rmse = minute::lstm::step_4_train_model::evaluate_model(&_trained_model, test_df.clone(), &device, forecast_horizon)
-        .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
-    println!("Test RMSE: {:.4}", rmse);
+        if crate::util::model_utils::is_model_version_current(&model_path, current_version) {
+            // Load the model
+            let (_loaded_lstm, _metadata) = crate::util::model_utils::load_trained_lstm_model::<BurnBackend>(
+                ticker,
+                model_type,
+                &model_name,
+                &device,
+            )
+            .expect("Failed to load model");
+            
+            println!("Loaded existing LSTM model with current version: {}", current_version);
+        } else {
+            // Train LSTM model
+            println!("Starting LSTM model training...");
+            let ep_start = Instant::now();
+            let (trained_lstm, _) =
+                minute::lstm::step_4_train_model::train_model(train_df.clone(), training_config, &device, ticker, model_type, 390)
+                    .map_err(|e| PolarsError::ComputeError(format!("Training error: {}", e).into()))?;
+            println!("Trained and saved new LSTM model. Epoch took {:?}", ep_start.elapsed());
+            
+            // Evaluate LSTM model
+            println!("Evaluating LSTM model on test data...");
+            let forecast_horizon = 390; // full trading day in minutes
+            let rmse = minute::lstm::step_4_train_model::evaluate_model(&trained_lstm, test_df.clone(), &device, forecast_horizon)
+                .map_err(|e| PolarsError::ComputeError(format!("Evaluation error: {}", e).into()))?;
+            println!("LSTM Test RMSE: {:.4}", rmse);
+        }
+    } else if model_type == "gru" {
+        // Configure GRU training
+        let training_config = minute::gru::step_4_train_model::TrainingConfig {
+            learning_rate: 0.001,
+            batch_size: 32,
+            epochs: 10,
+            test_split: 0.2,
+            dropout: constants::DEFAULT_DROPOUT,
+            patience: 5,
+            min_delta: 0.001,
+            use_huber_loss: true,
+            checkpoint_epochs: 2,
+            bidirectional: true,
+            num_layers: 1,
+        };
+
+        let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
+        model_path = crate::util::model_utils::get_model_path(ticker, model_type).join(model_name.clone());
+        let current_version = env!("CARGO_PKG_VERSION");
+
+        if crate::util::model_utils::is_model_version_current(&model_path, current_version) {
+            // Load the GRU model
+            let (_loaded_gru, _metadata) = crate::util::model_utils::load_trained_gru_model::<BurnBackend>(
+                ticker,
+                model_type,
+                &model_name,
+                &device,
+            )
+            .expect("Failed to load model");
+            
+            println!("Loaded existing GRU model with current version: {}", current_version);
+        } else {
+            // Train a new GRU model
+            println!("Starting GRU model training...");
+            
+            // Prepare data tensors for GRU training
+            println!("Preparing data for GRU training...");
+            let mut normalized_df = train_df.clone();
+            minute::lstm::step_1_tensor_preparation::normalize_features(
+                &mut normalized_df, 
+                &["close", "open", "high", "low"], 
+                false,
+                false
+            ).map_err(|e| PolarsError::ComputeError(format!("Data normalization error: {}", e).into()))?;
+            
+            // Create tensors
+            let forecast_horizon = 390; // full trading day in minutes
+            let (features, targets) = minute::lstm::step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
+                &normalized_df,
+                constants::SEQUENCE_LENGTH,
+                forecast_horizon,
+                &device,
+                false,
+                None
+            ).map_err(|e| PolarsError::ComputeError(format!("Tensor creation error: {}", e).into()))?;
+            
+            // Train GRU model
+            let ep_start = Instant::now();
+            let (trained_gru, metadata) = minute::gru::step_4_train_model::train_gru_model(
+                features, 
+                targets, 
+                training_config, 
+                &device
+            ).map_err(|e| PolarsError::ComputeError(format!("GRU training error: {}", e).into()))?;
+            
+            // Save the trained GRU model
+            crate::util::model_utils::save_trained_gru_model(
+                &trained_gru,
+                ticker,
+                model_type,
+                &model_name,
+                metadata.input_size,
+                metadata.hidden_size,
+                metadata.output_size,
+                metadata.num_layers,
+                metadata.bidirectional,
+                metadata.dropout
+            ).map_err(|e| PolarsError::ComputeError(format!("Model saving error: {}", e).into()))?;
+            
+            println!("Trained and saved new GRU model. Epoch took {:?}", ep_start.elapsed());
+            
+            // Evaluate GRU model
+            println!("Evaluating GRU model on test data...");
+            let mut test_normalized = test_df.clone();
+            minute::lstm::step_1_tensor_preparation::normalize_features(
+                &mut test_normalized, 
+                &["close", "open", "high", "low"], 
+                false,
+                false
+            ).map_err(|e| PolarsError::ComputeError(format!("Test data normalization error: {}", e).into()))?;
+            
+            // Create test tensors
+            let (test_features, test_targets) = minute::lstm::step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
+                &test_normalized,
+                constants::SEQUENCE_LENGTH,
+                forecast_horizon,
+                &device,
+                false,
+                None
+            ).map_err(|e| PolarsError::ComputeError(format!("Test tensor creation error: {}", e).into()))?;
+            
+            // Evaluate
+            let mse = minute::gru::step_4_train_model::evaluate_model(
+                &trained_gru, 
+                test_features, 
+                test_targets
+            ).map_err(|e| PolarsError::ComputeError(format!("GRU evaluation error: {}", e).into()))?;
+            
+            println!("GRU Test MSE: {:.4}", mse);
+        }
+    }
 
     // Return the path to the saved model
     Ok(model_path)
 }
 
-fn generate_predictions(df: DataFrame, train_df: &DataFrame) -> Result<(), PolarsError> {
+fn generate_predictions(df: DataFrame, _train_df: &DataFrame, model_type: &str) -> Result<(), PolarsError> {
     let forecast_horizon = 390; // full trading day in minutes
-    // Initialize device for prediction (CPU)
+    // Define BurnBackend inside the function scope to avoid the unused warning
     type BurnBackend = Autodiff<NdArray<f32>>;
     let device = NdArrayDevice::default();
 
-    // Prepare data tensors - using the enhanced build_enhanced_lstm_model function
-    let (features, _) = minute::lstm::step_1_tensor_preparation::build_enhanced_lstm_model(df.clone(), forecast_horizon)
-        .map_err(|e| PolarsError::ComputeError(format!("Tensor building error: {}", e).into()))?;
-
     // Load model metadata to get correct hyperparameters
     let ticker = std::env::args().nth(1).unwrap_or("AAPL".to_string());
-    let model_type = std::env::args().nth(2).map(|s| s.to_lowercase()).unwrap_or("lstm".to_string());
     let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
-    let (loaded_model, metadata) = crate::util::model_utils::load_trained_model::<BurnBackend>(
-        &ticker,
-        &model_type,
-        &model_name,
-        &device,
-    ).map_err(|e| PolarsError::ComputeError(format!("Model loading error: {}", e).into()))?;
-
-    let input_dim = features.dims()[2];
-    let hidden_dim = metadata.hidden_size;
-    let output_dim = metadata.output_size;
-    let num_layers = metadata.num_layers;
-    let bidirectional = metadata.bidirectional;
-    let dropout = constants::DEFAULT_DROPOUT; // Use our improved dropout
-
-    // Create model with loaded hyperparameters
-    let model: minute::lstm::step_3_lstm_model_arch::TimeSeriesLstm<BurnBackend> =
-        minute::lstm::step_3_lstm_model_arch::TimeSeriesLstm::new(
-            input_dim,
-            hidden_dim,
-            output_dim,
-            num_layers,
-            bidirectional,
-            dropout,
-            &device,
-        );
-
-    // Use our new ensemble forecasting with multiple predictive strategies
-    println!("Generating ensemble forecast for the next trading day ({} minutes)...", forecast_horizon);
-    let predictions =
-        minute::lstm::step_5_prediction::ensemble_forecast(&loaded_model, df.clone(), &device, forecast_horizon)
-            .map_err(|e| PolarsError::ComputeError(format!("Forecast error: {}", e).into()))?;
-
-    // The predictions are already denormalized by ensemble_forecast
     
-    // Print per-minute predictions with timestamps starting from 09:30
-    println!("Per-minute predictions for the next trading day:");
-    let mut hour = 9;
-    let mut minute = 30;
-    for (i, pred) in predictions.iter().enumerate() {
-        println!("{:02}:{:02} - Minute {}: ${:.2}", hour, minute, i + 1, pred);
-        minute += 1;
-        if minute == 60 {
-            minute = 0;
-            hour += 1;
+    if model_type == "lstm" {
+        // Prepare data tensors - using the enhanced build_enhanced_lstm_model function
+        let (_features, _) = minute::lstm::step_1_tensor_preparation::build_enhanced_lstm_model(df.clone(), forecast_horizon)
+            .map_err(|e| PolarsError::ComputeError(format!("Tensor building error: {}", e).into()))?;
+    
+        // Load the LSTM model directly since we need the specific type
+        let (loaded_lstm, _lstm_metadata) = crate::util::model_utils::load_trained_lstm_model::<BurnBackend>(
+            &ticker,
+            model_type,
+            &model_name,
+            &device,
+        ).map_err(|e| PolarsError::ComputeError(format!("LSTM model loading error: {}", e).into()))?;
+        
+        // Use LSTM ensemble forecasting
+        println!("Generating LSTM ensemble forecast for the next trading day ({} minutes)...", forecast_horizon);
+        let predictions = minute::lstm::step_5_prediction::ensemble_forecast(
+            &loaded_lstm, 
+            df.clone(), 
+            &device, 
+            forecast_horizon
+        ).map_err(|e| PolarsError::ComputeError(format!("LSTM forecast error: {}", e).into()))?;
+        
+        // Print per-minute predictions with timestamps starting from 09:30
+        println!("Per-minute LSTM predictions for the next trading day:");
+        let mut hour = 9;
+        let mut minute = 30;
+        for (i, pred) in predictions.iter().enumerate() {
+            println!("{:02}:{:02} - Minute {}: ${:.2}", hour, minute, i + 1, pred);
+            minute += 1;
+            if minute == 60 {
+                minute = 0;
+                hour += 1;
+            }
+        }
+    } else if model_type == "gru" {
+        // Load GRU model
+        let (loaded_gru, _gru_metadata) = crate::util::model_utils::load_trained_gru_model::<BurnBackend>(
+            &ticker,
+            model_type,
+            &model_name,
+            &device,
+        ).map_err(|e| PolarsError::ComputeError(format!("GRU model loading error: {}", e).into()))?;
+        
+        // Generate GRU multi-step predictions
+        println!("Generating GRU forecast for the next trading day ({} minutes)...", forecast_horizon);
+        let predictions = minute::gru::step_5_prediction::predict_multiple_steps(
+            &loaded_gru,
+            df.clone(),
+            forecast_horizon,
+            &device,
+            false // don't use extended features
+        ).map_err(|e| PolarsError::ComputeError(format!("GRU forecast error: {}", e).into()))?;
+        
+        // Print per-minute predictions with timestamps starting from 09:30
+        println!("Per-minute GRU predictions for the next trading day:");
+        let mut hour = 9;
+        let mut minute = 30;
+        for (i, pred) in predictions.iter().enumerate() {
+            println!("{:02}:{:02} - Minute {}: ${:.2}", hour, minute, i + 1, pred);
+            minute += 1;
+            if minute == 60 {
+                minute = 0;
+                hour += 1;
+            }
+        }
+        
+        // Compare with LSTM if both models are available
+        let lstm_model_path = crate::util::model_utils::get_model_path(&ticker, "lstm").join(&model_name);
+        if lstm_model_path.exists() {
+            println!("LSTM model found. Comparing GRU and LSTM predictions...");
+            
+            // Load LSTM model
+            let (loaded_lstm, _) = crate::util::model_utils::load_trained_lstm_model::<BurnBackend>(
+                &ticker,
+                "lstm",
+                &model_name,
+                &device,
+            ).map_err(|e| PolarsError::ComputeError(format!("LSTM model loading error: {}", e).into()))?;
+            
+            // Compare models
+            let (gru_preds, lstm_preds) = minute::gru::step_5_prediction::compare_with_lstm(
+                &loaded_gru,
+                &loaded_lstm,
+                df.clone(),
+                10, // Compare first 10 minutes
+                &device
+            ).map_err(|e| PolarsError::ComputeError(format!("Model comparison error: {}", e).into()))?;
+            
+            println!("Model comparison (first 10 minutes):");
+            println!("Minute | GRU Prediction | LSTM Prediction");
+            println!("-------------------------------------------");
+            for i in 0..gru_preds.len() {
+                println!("{:6} | ${:13.2} | ${:14.2}", i+1, gru_preds[i], lstm_preds[i]);
+            }
         }
     }
 
@@ -234,6 +397,7 @@ mod tests {
     }
 }
 
+#[allow(dead_code)]
 fn select_features(df: &DataFrame, target_col: &str, n_features: usize) -> Result<Vec<String>, anyhow::Error> {
     println!("Performing feature selection to identify the most important {} features...", n_features);
     
@@ -254,7 +418,7 @@ fn select_features(df: &DataFrame, target_col: &str, n_features: usize) -> Resul
     
     // Get the target column
     let target = df.column(target_col)?;
-    let target_f64 = target.cast(&DataType::Float64)?;
+    let _target_f64 = target.cast(&DataType::Float64)?;
     
     // Calculate correlations with target for each feature
     let mut correlations = Vec::with_capacity(feature_columns.len());
@@ -332,8 +496,9 @@ fn select_features(df: &DataFrame, target_col: &str, n_features: usize) -> Resul
     Ok(selected_features)
 }
 
+#[allow(dead_code)]
 fn train_lstm_model(
-    ticker: &str,
+    _ticker: &str,
     df: &DataFrame,
     use_enhanced_features: bool,
     use_feature_selection: bool,
@@ -348,7 +513,7 @@ fn train_lstm_model(
     let mut training_df = df.clone();
     
     // If feature selection is enabled, select most important features
-    let selected_features = if use_feature_selection {
+    let _selected_features = if use_feature_selection {
         select_features(&training_df, "close", 15)?
     } else {
         vec![] // Use default features

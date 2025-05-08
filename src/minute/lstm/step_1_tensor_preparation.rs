@@ -4,7 +4,6 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Shape, Tensor};
 use polars::error::PolarsResult;
 use polars::prelude::*;
-use rayon::prelude::*;
 use serde_json;
 use rand::Rng;
 use rand::SeedableRng;

@@ -125,8 +125,10 @@ impl<B: Backend> TimeSeriesLstm<B> {
         squared_sum * self.regularization
     }
     
-    /// Huber loss function for more robust regression
-    pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, delta: f64) -> Tensor<B, 0> {
+    /// Huber loss function, a combination of MSE and MAE that is more robust to outliers
+    /// It acts like MSE for small errors and like MAE for large errors
+    #[allow(dead_code)]
+    pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, _delta: f64) -> Tensor<B, 0> {
         // Compute mean squared error
         let diff = pred - target;
         let squared_diff = diff.clone() * diff;

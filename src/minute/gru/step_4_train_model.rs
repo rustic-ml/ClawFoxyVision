@@ -1,20 +1,14 @@
 // External imports
 use anyhow::Result;
 use burn::tensor::{backend::Backend, Tensor, Int, TensorData};
-use burn::module::Module;
-use burn::optim::{AdamConfig, Optimizer};
-use burn::record::Record;
+use burn::optim::AdamConfig;
 use rand::seq::SliceRandom;
 use chrono::Local;
 use burn::tensor::Shape;
 
 // Internal imports
 use super::step_3_gru_model_arch::TimeSeriesGru;
-use crate::minute::lstm::step_1_tensor_preparation::{
-    dataframe_to_tensors, normalize_features, split_data
-};
 use crate::minute::gru::step_6_model_serialization::ModelMetadata;
-use crate::constants::SEQUENCE_LENGTH;
 
 /// # GRU Training Configuration
 ///
@@ -82,6 +76,7 @@ impl Default for TrainingConfig {
 /// Handles the training process for the TimeSeriesGru model.
 /// This is a simplified training implementation without the full burn::train framework.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TimeSeriesGruTrainer<B: Backend> {
     optimizer: AdamConfig,
     config: TrainingConfig,

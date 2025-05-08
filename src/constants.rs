@@ -56,6 +56,6 @@ pub const PRICE_DENORM_CLIP_MIN: f64 = 0.0; // Prevent negative price prediction
 pub const L2_REGULARIZATION: f64 = 0.01; // L2 regularization strength
 
 // Model paths
-pub const MODEL_PATH: &str = "";
+pub const MODEL_PATH: &str = "models"; // Use "models" directory in the current workspace
 pub const MODEL_FILE_NAME: &str = "_lstm_model";
 

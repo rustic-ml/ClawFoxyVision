@@ -178,17 +178,24 @@ impl<B: Backend> TimeSeriesGru<B> {
     ///
     /// Combines MSE for small errors and MAE (Mean Absolute Error) for large errors,
     /// making it less sensitive to outliers than pure MSE.
-    pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, _delta: f64) -> Tensor<B, 0> {
-        // Compute mean squared error
+    pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, _delta: f64) -> Tensor<B, 1> {
+        // Compute mean squared error first with traditional method to avoid dimension issues
         let diff = pred - target;
-        let squared_diff = diff.clone() * diff;
-        let mse = squared_diff.mean().reshape([0_usize; 0]);
+        let squared_diff = diff.clone() * diff.clone();
         
-        // Add L2 regularization if configured
+        // Use tensor operations to get a scalar result
+        let total = squared_diff.sum();
+        let count = diff.dims().iter().product::<usize>() as f64;
+        let mse = total / count;
+        
+        // For L2 regularization
         if self.regularization > 0.0 {
+            // Get the sum of squared weights
             let weight_squared = self.output.weight.val().clone() * self.output.weight.val().clone();
-            let l2_penalty = (weight_squared.sum() * self.regularization).reshape([0_usize; 0]);
-            mse + l2_penalty
+            let l2_sum = weight_squared.sum();
+            
+            // Add scaled regularization to MSE
+            mse + (l2_sum * self.regularization)
         } else {
             mse
         }
@@ -198,15 +205,24 @@ impl<B: Backend> TimeSeriesGru<B> {
     ///
     /// The standard loss function for regression problems, with added
     /// L2 regularization to prevent overfitting.
-    pub fn mse_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 0> {
+    pub fn mse_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+        // Compute MSE using tensor operations to avoid dimension issues
         let diff = pred - target;
-        let squared_diff = diff.clone() * diff;
-        let mse = squared_diff.mean().reshape([0_usize; 0]);
+        let squared_diff = diff.clone() * diff.clone();
         
+        // Use tensor operations to get a scalar result
+        let total = squared_diff.sum();
+        let count = diff.dims().iter().product::<usize>() as f64;
+        let mse = total / count;
+        
+        // For L2 regularization
         if self.regularization > 0.0 {
+            // Get the sum of squared weights
             let weight_squared = self.output.weight.val().clone() * self.output.weight.val().clone();
-            let l2_penalty = (weight_squared.sum() * self.regularization).reshape([0_usize; 0]);
-            mse + l2_penalty
+            let l2_sum = weight_squared.sum();
+            
+            // Add scaled regularization to MSE
+            mse + (l2_sum * self.regularization)
         } else {
             mse
         }
@@ -298,4 +314,4 @@ impl<B: Backend> Attention<B> {
         // Apply attention weights to values
         weights.matmul(v)
     }
-} 
+}

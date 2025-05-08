@@ -220,7 +220,7 @@ pub fn denormalize_z_score_predictions(
     let mut denormalized = Vec::with_capacity(predictions.len());
     let mut prev_value = f64_series.get(f64_series.len() - 1).unwrap_or(mean);
     
-    for (i, &pred) in predictions.iter().enumerate() {
+    for (_i, &pred) in predictions.iter().enumerate() {
         // Basic denormalization using the Z-score formula: x = z*std + mean
         let raw_value = (pred * std) + mean;
         
@@ -416,7 +416,7 @@ pub fn ensemble_forecast<B: Backend>(
     let df_copy = df.clone();
     
     // Check if we have extended features available by verifying all columns exist
-    let has_all_extended_features = EXTENDED_INDICATORS.iter()
+    let _has_all_extended_features = EXTENDED_INDICATORS.iter()
         .all(|&col| df_copy.schema().contains(col));
     
     // Safety check - force standard features if any extended features are missing
@@ -438,8 +438,9 @@ pub fn ensemble_forecast<B: Backend>(
         0.3,   // Error correction alpha
     )?;
     
-    // Just use the recursive predictions twice since we've disabled extended features
-    let extended_predictions = recursive_predictions.clone();
+    // For extended predictions, we just clone the recursive predictions for now
+    // This is a placeholder for future implementation
+    let _extended_predictions = recursive_predictions.clone();
     
     // Combine predictions using weighted average
     // Adjusted weights to favor direct predictions more (they're typically more stable)
@@ -508,10 +509,13 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     
     // Calculate mean and standard deviation of predictions to identify trend direction
     let pred_mean = predictions.iter().sum::<f64>() / predictions.len() as f64;
-    let pred_std = (predictions.iter()
+    let _pred_std = (predictions.iter()
         .map(|x| (x - pred_mean).powi(2))
         .sum::<f64>() / predictions.len() as f64)
         .sqrt();
+    
+    // Calculate mean price (just as an example - not used in current implementation)
+    let _mean_price = predictions.iter().sum::<f64>() / predictions.len() as f64;
     
     // Start from the last known price
     let mut prev_price = last_known_price;
@@ -536,13 +540,12 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
     
     // Keep track of mean and starting price for mean reversion
     let start_price = prev_price;
-    let mean_price = predictions.iter().sum::<f64>() / predictions.len() as f64;
     let mean_reversion_strength = 0.2; // Strength of mean reversion effect
     
-    for (idx, &pred) in predictions.iter().enumerate() {
+    for (_i, &pred) in predictions.iter().enumerate() {
         // Calculate trend direction from raw prediction compared to previous one
-        let mut direction = if idx > 0 {
-            if pred > predictions[idx - 1] { 1.0 } else { -1.0 }
+        let mut direction = if _i > 0 {
+            if pred > predictions[_i - 1] { 1.0 } else { -1.0 }
         } else {
             if pred > pred_mean { 1.0 } else { -1.0 }
         };
@@ -574,10 +577,10 @@ fn apply_max_change_constraint(predictions: Vec<f64>, df: DataFrame) -> Result<V
             // Base change - minimal trend + randomness + mean reversion
             (trend_factor + random_factor + mean_reversion) *
             // Increase volatility at market open and close (U-shaped volatility)
-            (1.0 + 0.5 * (1.0 - (((idx as f64 / predictions.len() as f64) * 2.0 - 1.0).powi(2))));
+            (1.0 + 0.5 * (1.0 - (((_i as f64 / predictions.len() as f64) * 2.0 - 1.0).powi(2))));
         
         // Every ~15-30 minutes, introduce a small reversal for realism
-        let time_based_reversal = if idx % (15 + (rng.random::<f64>() * 15.0) as usize) == 0 && idx > 0 {
+        let time_based_reversal = if _i % (15 + (rng.random::<f64>() * 15.0) as usize) == 0 && _i > 0 {
             -1.0 * direction * max_percent_change_per_minute * rng.random::<f64>() * 0.8
         } else {
             0.0  
