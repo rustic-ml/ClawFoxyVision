@@ -1,4 +1,4 @@
-![ClawFoxyVision](ClawFoxyVision.png)
+![ClawFoxyVision](ClawFoxyVision_250px.png)
 
 ## ClawFoxyVision
 
