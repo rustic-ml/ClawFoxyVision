@@ -1,20 +1,54 @@
-![ClawFoxyVision](ClawFoxyVision_250px.png)
+# ClawFoxyVision 🔮
 
-## ClawFoxyVision
+![ClawFoxyVision Logo](ClawFoxyVision_250px.png)
 
-Clawy and Foxy, with their ClawFoxyVision library here to give you a better view to a fortune lies ahead. These two visionary companions combine their unique talents to unravel the mysteries of financial time series data. Clawy, with razor-sharp analytical claws, dissects complex market patterns, while Foxy brings cunning intelligence to detect subtle market movements others might miss. Together, they empower traders and analysts with unprecedented foresight into market trends, turning raw data into actionable insights. Their advanced vision algorithms cut through market noise to reveal the true signals that predict tomorrow's movements. Trust in ClawFoxyVision to illuminate your path through the often murky waters of financial forecasting.
+**ClawFoxyVision: Your Sharper View into Financial Fortunes.**
 
-## Under the hood
+Clawy and Foxy, our visionary duo, power this library to help you navigate the complexities of financial time series data. Clawy's razor-sharp analytical abilities dissect intricate market patterns, while Foxy's cunning intelligence detects subtle movements often missed by others.
 
-A time series forecasting library built with [Burn](https://github.com/tracel-ai/burn), a deep learning framework in Rust.
+ClawFoxyVision empowers traders and analysts with enhanced foresight into market trends. By transforming raw data into actionable insights, our advanced vision algorithms cut through market noise, revealing the true signals that can inform tomorrow's movements. Trust ClawFoxyVision to illuminate your path through the often murky waters of financial forecasting.
 
-## Features
+**Built with [Burn](https://github.com/tracel-ai/burn), a deep learning framework in Rust.**
 
-- LSTM and GRU model implementations for time series forecasting
-- Configurable sequence length and forecast horizon
-- Data normalization and preprocessing
-- Model saving and loading
-- Compare predictions between LSTM and GRU models
+## ✨ Features
+
+* **Advanced Recurrent Neural Networks:** Implements LSTM and GRU models tailored for time series forecasting.
+* **Flexible Configuration:**
+    * Configurable sequence length and forecast horizon.
+    * Bidirectional processing capabilities.
+    * Integrated attention mechanisms.
+    * Adjustable hyperparameters.
+    * L2 regularization and dropout for robust training.
+* **Streamlined Data Handling:**
+    * Built-in data normalization and preprocessing.
+    * Supports OHLC (Open, High, Low, Close) data from CSV files.
+* **Persistent Models:** Save trained models and load them for later use.
+* **Comparative Analysis:** Directly compare prediction performance between LSTM and GRU models for the same ticker.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+* Rust 1.65 or higher installed on your system.
+* Your stock data should be in CSV files, with columns for Open, High, Low, and Close values. For example: `AAPL-ticker_minute_bars.csv`.
+
+### Installation
+
+1.  Clone the repository:
+    ```bash
+    git clone <repository-url> # Replace <repository-url> with the actual URL
+    cd ClawFoxyVision
+    ```
+2.  The project uses Cargo, Rust's package manager. Dependencies will be handled automatically.
+
+### Running the Models
+
+You can train and run forecasting models using either the provided shell script or directly with Cargo.
+
+**Using the shell script:**
+
+```bash
+./run_model.sh [ticker] [model_type]
 
 ## Usage
 
