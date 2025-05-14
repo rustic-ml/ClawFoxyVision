@@ -4,8 +4,3 @@ pub mod step_3_lstm_model_arch;
 pub mod step_4_train_model;
 pub mod step_5_prediction;
 pub mod step_6_model_serialization;
-
-#[cfg(test)]
-pub mod tests {
-    pub mod test_tensor_preparation;
-}

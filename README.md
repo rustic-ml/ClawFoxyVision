@@ -91,7 +91,7 @@ Both models support:
 ### Input Data
 
 The application expects stock data in CSV format with OHLC (Open, High, Low, Close) values.
-Example input file: `AAPL-ticker_minute_bars.csv`
+Example input file: `AAPL_minute_ohlcv.csv`
 
 ## Implementation Details
 

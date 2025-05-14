@@ -387,16 +387,6 @@ fn generate_predictions(df: DataFrame, _train_df: &DataFrame, model_type: &str) 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    // Tell Rust to look for tests in the LSTM module
-    #[test]
-    fn include_lstm_tests() {
-        // This is just a dummy test to ensure the LSTM tests are included
-        assert!(true);
-    }
-}
-
 #[allow(dead_code)]
 fn select_features(df: &DataFrame, target_col: &str, n_features: usize) -> Result<Vec<String>, anyhow::Error> {
     println!("Performing feature selection to identify the most important {} features...", n_features);

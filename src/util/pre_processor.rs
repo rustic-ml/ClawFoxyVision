@@ -2,12 +2,41 @@
 use polars::error::PolarsError;
 use polars::prelude::*;
 use chrono::{Utc, Duration};
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::PathBuf, path::Path};
+use std::fs::File;
+use std::sync::Arc;
 
 // Local modules
-use crate::feature_engineering::add_technical_indicators;
 use crate::constants::LSTM_TRAINING_DAYS;
 
+/// Read a CSV file into a DataFrame with custom column names
+pub fn read_csv_to_dataframe<P: AsRef<Path>>(
+    file_path: P,
+    has_header: bool,
+    column_names: Option<Vec<&str>>,
+) -> PolarsResult<DataFrame> {
+    let file = File::open(file_path)?;
+    
+    // Create options
+    let mut options = CsvReadOptions::default()
+        .with_has_header(has_header);
+    
+    // If column names were provided, create a schema
+    if let Some(names) = column_names {
+        let fields: Vec<Field> = names.iter()
+            .map(|&name| Field::new(name.to_string().into(), DataType::String))
+            .collect();
+        
+        let schema = Schema::from_iter(fields);
+        options = options.with_schema(Some(Arc::new(schema)));
+    }
+    
+    // Create reader and apply options
+    let reader = CsvReader::new(file).with_options(options);
+    
+    // Finish reading
+    reader.finish()
+}
 
 /// Loads and preprocesses a CSV file into a DataFrame
 ///
@@ -26,16 +55,17 @@ pub fn load_and_preprocess(full_path: &PathBuf, days: Option<i64>) -> Result<Dat
         return Err(format!("File not found: {}", full_path.display()).into());
     }
 
-    let file = std::fs::File::open(&full_path)?;
+    // Read CSV using our local function instead of ta-lib-in-rust
+    let df = read_csv_to_dataframe(full_path, true, None)?;
+    
     // Compute cutoff from one year ago and filter rows by 'time'
     let training_days = days.unwrap_or(LSTM_TRAINING_DAYS);
     let one_year_ago = Utc::now() - Duration::days(training_days);
     let cutoff_str = one_year_ago.format("%Y-%m-%d %H:%M:%S UTC").to_string();
     use polars::prelude::{col, lit};
-    // Read CSV lazily, filter by 'time' > cutoff, then collect
-    let mut df = CsvReader::new(file)
-        .finish()?
-        .lazy()
+    
+    // Filter by 'time' > cutoff
+    let mut df = df.lazy()
         .filter(col("time").gt(lit(cutoff_str)))
         .collect()?;
 
@@ -71,9 +101,6 @@ pub fn prepare_lstm_data(
 ) -> Result<DataFrame, Box<dyn Error>> {
     // Load and preprocess data
     let mut df = load_and_preprocess(file_path, None)?;
-
-    // Add technical indicators
-    df = add_technical_indicators(&mut df)?;
 
     // TODO: Add sequence creation for LSTM
     // This will be implemented when we add the LSTM model
