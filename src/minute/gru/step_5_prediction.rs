@@ -132,47 +132,57 @@ pub fn predict_multiple_steps<B: Backend>(
         let next_value = predict_next_step(model, prediction_df.clone(), device, use_extended_features)?;
         predictions.push(next_value);
         
+        // Get actual column names from the prediction DataFrame
+        let column_names: Vec<String> = prediction_df.get_column_names()
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
+        
         // Add the predicted value as a new row
-        // This is simplified - in a real implementation, you'd create a full row with all required columns
         let mut next_row_values = Vec::new();
         
-        // Choose the appropriate set of indicators
-        let feature_columns = if use_extended_features {
-            &EXTENDED_INDICATORS[..]
-        } else {
-            &TECHNICAL_INDICATORS[..]
-        };
-        
-        // For a simple implementation, copy the last row and replace the 'close' value
-        for col_name in feature_columns {
+        // Create series for each column in the DataFrame
+        for col_name in &column_names {
             let col = prediction_df.column(col_name)?;
             let height = col.len();
             
-            if *col_name == "close" {
-                next_row_values.push(Series::new((*col_name).into(), vec![next_value]).into());
+            if col_name == "close" {
+                next_row_values.push(Series::new(col_name.into(), vec![next_value]).into());
             } else if height > 0 {
-                // Use the last value for other columns - this is a simplification
-                let _value = col.get(height - 1);
-                
-                if let Ok(series) = df.column(col_name) {
-                    if let Ok(f64_series) = series.f64() {
-                        // Try to create a new series of the same type
-                        let last_val = f64_series.get(height - 1).unwrap_or(0.0);
-                        next_row_values.push(Series::new((*col_name).into(), vec![last_val]).into());
-                    } else {
-                        // Fallback for non-float columns
-                        next_row_values.push(Series::new((*col_name).into(), vec![0.0]).into());
-                    }
+                // Use the last value for other columns
+                if let Ok(f64_series) = col.f64() {
+                    let last_val = f64_series.get(height - 1).unwrap_or(0.0);
+                    next_row_values.push(Series::new(col_name.into(), vec![last_val]).into());
                 } else {
-                    // Column not found - use default
-                    next_row_values.push(Series::new((*col_name).into(), vec![0.0]).into());
+                    // Fallback for non-float columns - use the actual last value of whatever type it is
+                    let last_val = col.get(height - 1);
+                    match last_val {
+                        Ok(AnyValue::Int32(v)) => next_row_values.push(Series::new(col_name.into(), vec![v]).into()),
+                        Ok(AnyValue::Int64(v)) => next_row_values.push(Series::new(col_name.into(), vec![v]).into()),
+                        Ok(AnyValue::Float32(v)) => next_row_values.push(Series::new(col_name.into(), vec![v]).into()),
+                        Ok(AnyValue::Float64(v)) => next_row_values.push(Series::new(col_name.into(), vec![v]).into()),
+                        Ok(AnyValue::String(v)) => next_row_values.push(Series::new(col_name.into(), vec![v]).into()),
+                        _ => next_row_values.push(Series::new(col_name.into(), vec![0.0]).into()),
+                    };
                 }
+            } else {
+                // Column exists but is empty - use default
+                next_row_values.push(Series::new(col_name.into(), vec![0.0]).into());
             }
         }
         
         // Create and append the new row
         if !next_row_values.is_empty() {
             let next_row = DataFrame::new(next_row_values)?;
+            
+            // Double-check that the new row has exactly the same schema as the prediction DataFrame
+            if next_row.width() != prediction_df.width() {
+                return Err(anyhow::anyhow!(
+                    "Error: lengths don't match: unable to append to a DataFrame of width {} with a DataFrame of width {}",
+                    prediction_df.width(), next_row.width()
+                ));
+            }
+            
             prediction_df = prediction_df.vstack(&next_row)?;
         }
     }

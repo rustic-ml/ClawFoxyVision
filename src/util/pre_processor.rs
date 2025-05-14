@@ -100,7 +100,7 @@ pub fn prepare_lstm_data(
     _sequence_length: usize,
 ) -> Result<DataFrame, Box<dyn Error>> {
     // Load and preprocess data
-    let mut df = load_and_preprocess(file_path, None)?;
+    let df = load_and_preprocess(file_path, None)?;
 
     // TODO: Add sequence creation for LSTM
     // This will be implemented when we add the LSTM model
