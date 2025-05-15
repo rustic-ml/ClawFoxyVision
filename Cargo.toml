@@ -26,7 +26,8 @@ rayon = "1.7.0"
 num-traits = "0.2.19"
 rand = "0.9.1"
 polars-utils = "0.47.1"
-rustalib = "1.0.7"
+rustalib = { path = "/home/orange/workspace/RusTaLib" }
+log = "0.4.27"
 
 [build-dependencies]
 built = "0.8.0"

@@ -1,5 +1,5 @@
 /// # GRU Implementation Module
-/// 
+///
 /// This module implements a Gated Recurrent Unit (GRU) neural network for time series forecasting.
 /// The GRU is a more efficient alternative to LSTM that maintains competitive performance while
 /// using fewer parameters and requiring less computational resources.

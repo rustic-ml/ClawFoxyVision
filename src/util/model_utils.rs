@@ -1,21 +1,23 @@
 use anyhow::{Context, Result};
-use burn::prelude::Backend;
 use burn::module::Module;
-use std::path::PathBuf;
-use std::path::Path;
+use burn::prelude::Backend;
 use burn::record::{BinFileRecorder, FullPrecisionSettings};
+use chrono::{DateTime, Local, Utc};
 use serde_json::from_str;
-use chrono::{Local, DateTime, Utc};
+use std::path::Path;
+use std::path::PathBuf;
 
-use crate::minute::lstm::{
-    step_3_lstm_model_arch::TimeSeriesLstm,
-    step_6_model_serialization::{ModelMetadata as LstmMetadata, load_model_with_metadata as load_lstm_model},
-};
+use crate::constants::MODEL_PATH;
 use crate::minute::gru::{
     step_3_gru_model_arch::TimeSeriesGru,
-    step_6_model_serialization::{ModelMetadata as GruMetadata, load_model as load_gru_model},
+    step_6_model_serialization::{load_model as load_gru_model, ModelMetadata as GruMetadata},
 };
-use crate::constants::MODEL_PATH;
+use crate::minute::lstm::{
+    step_3_lstm_model_arch::TimeSeriesLstm,
+    step_6_model_serialization::{
+        load_model_with_metadata as load_lstm_model, ModelMetadata as LstmMetadata,
+    },
+};
 
 /// Enum to represent different model types
 pub enum ModelType {
@@ -37,7 +39,7 @@ impl ModelType {
 pub fn get_model_path(ticker: &str, model_type: &str) -> PathBuf {
     // Get current directory as fallback
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    
+
     // Allow overriding MODEL_PATH via environment variable, fallback to constant or current directory
     let base = if !MODEL_PATH.is_empty() {
         MODEL_PATH.to_string()
@@ -47,22 +49,26 @@ pub fn get_model_path(ticker: &str, model_type: &str) -> PathBuf {
             current_dir.join("models").to_string_lossy().to_string()
         })
     };
-    
+
     let mut path = PathBuf::from(&base);
-    
+
     // Create directories if they don't exist
     path.push(ticker);
     path.push(model_type);
-    
+
     if !path.exists() {
         if let Err(e) = std::fs::create_dir_all(&path) {
-            eprintln!("Warning: Failed to create model directory at {}: {}", path.display(), e);
+            eprintln!(
+                "Warning: Failed to create model directory at {}: {}",
+                path.display(),
+                e
+            );
             // Continue anyway, the error will be handled when trying to save
         } else {
             println!("Created model directory: {}", path.display());
         }
     }
-    
+
     path
 }
 
@@ -81,16 +87,14 @@ pub fn save_trained_lstm_model<B: Backend>(
 ) -> Result<PathBuf> {
     // Create model directory if it doesn't exist
     let model_dir = get_model_path(ticker, model_type);
-    std::fs::create_dir_all(&model_dir)
-        .context("Failed to create models directory")?;
+    std::fs::create_dir_all(&model_dir).context("Failed to create models directory")?;
 
     // Create model path
     let model_path = model_dir.join(model_name);
 
     // Ensure parent directory exists
     if let Some(parent) = model_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create model parent directory")?;
+        std::fs::create_dir_all(parent).context("Failed to create model parent directory")?;
     }
 
     // Create metadata
@@ -104,8 +108,7 @@ pub fn save_trained_lstm_model<B: Backend>(
     );
 
     // Save model with metadata
-    save_lstm_model_with_metadata(model, metadata, &model_path)
-        .context("Failed to save model")?;
+    save_lstm_model_with_metadata(model, metadata, &model_path).context("Failed to save model")?;
 
     println!("LSTM model saved successfully to: {}", model_path.display());
     Ok(model_path)
@@ -126,16 +129,14 @@ pub fn save_trained_gru_model<B: Backend>(
 ) -> Result<PathBuf> {
     // Create model directory if it doesn't exist
     let model_dir = get_model_path(ticker, model_type);
-    std::fs::create_dir_all(&model_dir)
-        .context("Failed to create models directory")?;
+    std::fs::create_dir_all(&model_dir).context("Failed to create models directory")?;
 
     // Create model path
     let model_path = model_dir.join(model_name);
 
     // Ensure parent directory exists
     if let Some(parent) = model_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create model parent directory")?;
+        std::fs::create_dir_all(parent).context("Failed to create model parent directory")?;
     }
 
     // Create metadata
@@ -168,14 +169,16 @@ pub fn load_trained_lstm_model<B: Backend>(
 ) -> Result<(TimeSeriesLstm<B>, LstmMetadata)> {
     let model_path = get_model_path(ticker, model_type).join(model_name);
     println!("Loading LSTM model from: {}", model_path.display());
-    
+
     // Check if model exists
     if !model_path.exists() && !model_path.with_extension("bin").exists() {
-        return Err(anyhow::anyhow!("LSTM model file not found at: {}", model_path.display()));
+        return Err(anyhow::anyhow!(
+            "LSTM model file not found at: {}",
+            model_path.display()
+        ));
     }
-    
-    load_lstm_model(&model_path, device)
-        .context("Failed to load LSTM model")
+
+    load_lstm_model(&model_path, device).context("Failed to load LSTM model")
 }
 
 /// Load a trained GRU model with its configuration from MODEL_PATH
@@ -187,14 +190,16 @@ pub fn load_trained_gru_model<B: Backend>(
 ) -> Result<(TimeSeriesGru<B>, GruMetadata)> {
     let model_path = get_model_path(ticker, model_type).join(model_name);
     println!("Loading GRU model from: {}", model_path.display());
-    
+
     // Check if model exists
     if !model_path.exists() && !model_path.with_extension("bin").exists() {
-        return Err(anyhow::anyhow!("GRU model file not found at: {}", model_path.display()));
+        return Err(anyhow::anyhow!(
+            "GRU model file not found at: {}",
+            model_path.display()
+        ));
     }
-    
-    load_gru_model(&model_path, device)
-        .context("Failed to load GRU model")
+
+    load_gru_model(&model_path, device).context("Failed to load GRU model")
 }
 
 /// Save a model checkpoint during training (LSTM)
@@ -262,20 +267,19 @@ pub fn save_lstm_model_with_metadata<B: Backend>(
 ) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.as_ref().parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create model parent directory")?;
+        std::fs::create_dir_all(parent).context("Failed to create model parent directory")?;
     }
     // Save model
     let model_path = path.as_ref().with_extension("bin");
-    model.clone()
+    model
+        .clone()
         .save_file::<BinFileRecorder<FullPrecisionSettings>, _>(&model_path, &Default::default())
         .context("Failed to save model")?;
     // Save metadata
     let metadata_path = path.as_ref().with_extension("meta.json");
-    let metadata_json = serde_json::to_string_pretty(&metadata)
-        .context("Failed to serialize metadata")?;
-    std::fs::write(&metadata_path, metadata_json)
-        .context("Failed to write metadata file")?;
+    let metadata_json =
+        serde_json::to_string_pretty(&metadata).context("Failed to serialize metadata")?;
+    std::fs::write(&metadata_path, metadata_json).context("Failed to write metadata file")?;
     Ok(())
 }
 
@@ -296,7 +300,7 @@ pub fn is_model_version_current(model_base_path: &Path, current_version: &str) -
             if model_date.date_naive() == now.date() {
                 return true;
             }
-        } 
+        }
         // Try as GRU metadata if LSTM parse fails
         else if let Ok(metadata) = from_str::<GruMetadata>(&metadata_json) {
             // GRU metadata doesn't have version field, so just check if it's from today

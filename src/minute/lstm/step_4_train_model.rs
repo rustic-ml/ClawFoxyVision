@@ -1,19 +1,19 @@
 // External imports
 use anyhow::Result;
 use burn::optim::AdamConfig;
-use burn::tensor::{backend::Backend, Tensor};
-use polars::prelude::*;
 use burn::optim::GradientsParams;
 use burn::optim::Optimizer;
+use burn::tensor::{backend::Backend, Tensor};
+use polars::prelude::*;
 
 // Internal imports
 use super::step_1_tensor_preparation;
 use super::step_3_lstm_model_arch::TimeSeriesLstm;
 use crate::constants;
 use crate::util::model_utils;
-use burn_ndarray::NdArray;
 use burn_autodiff::Autodiff;
-  // For error mapping in evaluate_model
+use burn_ndarray::NdArray;
+// For error mapping in evaluate_model
 
 type BurnBackend = Autodiff<NdArray<f32>>;
 
@@ -39,9 +39,9 @@ impl Default for TrainingConfig {
             batch_size: 32,
             epochs: 10,
             test_split: 0.2,
-            patience: 3,       // Early stopping patience
-            min_delta: 0.001,  // Minimum improvement threshold
-            dropout: 0.3,      // Default higher dropout
+            patience: 3,          // Early stopping patience
+            min_delta: 0.001,     // Minimum improvement threshold
+            dropout: 0.3,         // Default higher dropout
             use_huber_loss: true, // Use Huber loss by default
             display_metrics: true,
             display_interval: 1,
@@ -68,9 +68,15 @@ pub fn train_model(
     println!("Starting model training...");
 
     // Prepare data by splitting into training and validation sets
-    let (features, targets) =
-        step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(&df, crate::constants::SEQUENCE_LENGTH, forecast_horizon, device, false, None)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let (features, targets) = step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
+        &df,
+        crate::constants::SEQUENCE_LENGTH,
+        forecast_horizon,
+        device,
+        false,
+        None,
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     println!(
         "Data prepared: features shape: {:?}, targets shape: {:?}",
         features.dims(),
@@ -116,8 +122,8 @@ pub fn train_model(
 
     // Initialize the model (reduced complexity for memory efficiency)
     let hidden_size = 64; // Reduced from 128 to save memory while maintaining reasonable capacity
-    let num_layers = 2;   // Keeping 2 layers for depth
-    let bidirectional = true; // Keeping bidirectional for better pattern recognition 
+    let num_layers = 2; // Keeping 2 layers for depth
+    let bidirectional = true; // Keeping bidirectional for better pattern recognition
     let dropout = config.dropout;
 
     let mut model = TimeSeriesLstm::<BurnBackend>::new(
@@ -178,7 +184,7 @@ pub fn train_model(
         let val_mse = val_mse_slice[0] as f64;
         let val_rmse = val_mse.sqrt();
         // Detailed validation logging disabled for speed
-        
+
         // Early stopping logic
         if best_val_rmse - val_rmse > config.min_delta {
             best_val_rmse = val_rmse;
@@ -187,7 +193,10 @@ pub fn train_model(
         } else {
             epochs_no_improve += 1;
             if epochs_no_improve >= config.patience {
-                println!("Early stopping triggered at epoch {} (best val RMSE = {:.6})", epoch, best_val_rmse);
+                println!(
+                    "Early stopping triggered at epoch {} (best val RMSE = {:.6})",
+                    epoch, best_val_rmse
+                );
                 model = best_model.clone();
                 break;
             }
@@ -248,7 +257,7 @@ pub fn evaluate_model<B: Backend>(
         forecast_horizon,
         device,
         false,
-        None
+        None,
     )
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     // Forward pass

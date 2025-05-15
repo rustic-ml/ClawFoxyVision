@@ -1,10 +1,10 @@
 // External imports
+use crate::constants::{DEFAULT_DROPOUT, L2_REGULARIZATION};
+use crate::minute::gru::step_2_gru_cell::GRU;
 use burn::module::Module;
+use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig};
 use burn::prelude::Backend;
 use burn::tensor::{activation, Tensor};
-use burn::nn::{Dropout, DropoutConfig, Linear, LinearConfig};
-use crate::minute::gru::step_2_gru_cell::GRU;
-use crate::constants::{DEFAULT_DROPOUT, L2_REGULARIZATION};
 
 /// # TimeSeriesGru Architecture
 ///
@@ -65,25 +65,33 @@ impl<B: Backend> TimeSeriesGru<B> {
         device: &B::Device,
     ) -> Self {
         // Use default higher dropout if not specified
-        let dropout_prob = if dropout_prob <= 0.0 { DEFAULT_DROPOUT } else { dropout_prob };
-        
+        let dropout_prob = if dropout_prob <= 0.0 {
+            DEFAULT_DROPOUT
+        } else {
+            dropout_prob
+        };
+
         // Configure GRU
-        let gru_output_size = if bidirectional { 2 * hidden_size } else { hidden_size };
+        let gru_output_size = if bidirectional {
+            2 * hidden_size
+        } else {
+            hidden_size
+        };
         let attention = Attention::new(gru_output_size, device);
-        
+
         // Add two dropout layers with different probabilities to prevent overfitting
         let dropout_config1 = DropoutConfig::new(dropout_prob);
         let dropout_config2 = DropoutConfig::new(dropout_prob * 0.7); // Second dropout slightly less aggressive
         let dropout1 = dropout_config1.init();
         let dropout2 = dropout_config2.init();
-        
+
         // Configure output layer
         let output_config = LinearConfig::new(gru_output_size, output_size);
         let output = output_config.init(device);
-        
+
         // Create GRU cell
         let gru = GRU::new(input_size, hidden_size, num_layers, bidirectional, device);
-        
+
         Self {
             input_size,
             hidden_size,
@@ -101,7 +109,7 @@ impl<B: Backend> TimeSeriesGru<B> {
     pub fn input_size(&self) -> usize {
         self.input_size
     }
-    
+
     /// Getter for L2 regularization strength
     pub fn regularization(&self) -> f64 {
         self.regularization
@@ -137,70 +145,77 @@ impl<B: Backend> TimeSeriesGru<B> {
         let batch_size = attended.dims()[0];
         let last_step_idx = attended.dims()[1] - 1;
         let gru_output_size = attended.dims()[2];
-        
+
         // Extract the last step from the sequence and reshape
-        let pooled = attended.narrow(1, last_step_idx, 1)
+        let pooled = attended
+            .narrow(1, last_step_idx, 1)
             .reshape([batch_size, gru_output_size]);
-        
+
         // Apply first dropout before the final layer
         let dropped1 = self.dropout1.forward(pooled);
-        
+
         // Apply the output layer - now outputs [batch_size, output_size]
         let output_pre = self.output.forward(dropped1);
-        
+
         // Apply second dropout after the output layer
         let dropped2 = self.dropout2.forward(output_pre);
-        
+
         // Clamp output to [0.0, 1.0] to match normalized target range
         dropped2.clamp(0.0, 1.0)
     }
-    
+
     /// Calculates L2 regularization penalty for the model weights
     ///
     /// This helps prevent overfitting by penalizing large weight values
     pub fn l2_penalty(&self) -> Tensor<B, 1> {
         let device = &self.output.weight.device();
-        
+
         // Sum squared weights from all layers
         let mut squared_sum = Tensor::zeros([1], device);
-        
+
         // Add output layer weights
         let output_weights = self.output.weight.val().clone();
         // Calculate sum of squared weights using element-wise multiplication
         let weight_squared = output_weights.clone() * output_weights;
         squared_sum = squared_sum + weight_squared.sum();
-        
+
         // Scale by regularization strength
         squared_sum * self.regularization
     }
-    
+
     /// Huber loss function for more robust regression against outliers
     ///
     /// Combines MSE for small errors and MAE (Mean Absolute Error) for large errors,
     /// making it less sensitive to outliers than pure MSE.
-    pub fn huber_loss(&self, pred: Tensor<B, 2>, target: Tensor<B, 2>, _delta: f64) -> Tensor<B, 1> {
+    pub fn huber_loss(
+        &self,
+        pred: Tensor<B, 2>,
+        target: Tensor<B, 2>,
+        _delta: f64,
+    ) -> Tensor<B, 1> {
         // Compute mean squared error first with traditional method to avoid dimension issues
         let diff = pred - target;
         let squared_diff = diff.clone() * diff.clone();
-        
+
         // Use tensor operations to get a scalar result
         let total = squared_diff.sum();
         let count = diff.dims().iter().product::<usize>() as f64;
         let mse = total / count;
-        
+
         // For L2 regularization
         if self.regularization > 0.0 {
             // Get the sum of squared weights
-            let weight_squared = self.output.weight.val().clone() * self.output.weight.val().clone();
+            let weight_squared =
+                self.output.weight.val().clone() * self.output.weight.val().clone();
             let l2_sum = weight_squared.sum();
-            
+
             // Add scaled regularization to MSE
             mse + (l2_sum * self.regularization)
         } else {
             mse
         }
     }
-    
+
     /// Calculate MSE loss with L2 regularization
     ///
     /// The standard loss function for regression problems, with added
@@ -209,18 +224,19 @@ impl<B: Backend> TimeSeriesGru<B> {
         // Compute MSE using tensor operations to avoid dimension issues
         let diff = pred - target;
         let squared_diff = diff.clone() * diff.clone();
-        
+
         // Use tensor operations to get a scalar result
         let total = squared_diff.sum();
         let count = diff.dims().iter().product::<usize>() as f64;
         let mse = total / count;
-        
+
         // For L2 regularization
         if self.regularization > 0.0 {
             // Get the sum of squared weights
-            let weight_squared = self.output.weight.val().clone() * self.output.weight.val().clone();
+            let weight_squared =
+                self.output.weight.val().clone() * self.output.weight.val().clone();
             let l2_sum = weight_squared.sum();
-            
+
             // Add scaled regularization to MSE
             mse + (l2_sum * self.regularization)
         } else {
@@ -287,24 +303,30 @@ impl<B: Backend> Attention<B> {
         let batch_size = x.dims()[0];
         let seq_len = x.dims()[1];
         let hidden_dim = x.dims()[2];
-        
+
         // Apply linear transformations to get query, key, and value
         // Reshape to [batch_size * seq_len, hidden_dim] for linear layers
         let x_reshaped = x.clone().reshape([batch_size * seq_len, hidden_dim]);
-        
-        let q = self.query.forward(x_reshaped.clone())
+
+        let q = self
+            .query
+            .forward(x_reshaped.clone())
             .reshape([batch_size, seq_len, hidden_dim]);
-        let k = self.key.forward(x_reshaped.clone())
+        let k = self
+            .key
+            .forward(x_reshaped.clone())
             .reshape([batch_size, seq_len, hidden_dim]);
-        let v = self.value.forward(x_reshaped)
+        let v = self
+            .value
+            .forward(x_reshaped)
             .reshape([batch_size, seq_len, hidden_dim]);
 
         // Compute attention scores (with scaling)
         let scale = (hidden_dim as f64).sqrt();
-        
+
         // For matrix multiplication, we need to transpose k
         let k_t = k.permute([0, 2, 1]); // [batch, hidden_dim, seq_len]
-        
+
         // Compute scores: [batch, seq_len, seq_len]
         let scores = q.matmul(k_t) / scale;
 

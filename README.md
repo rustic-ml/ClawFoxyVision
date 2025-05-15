@@ -125,3 +125,225 @@ When a GRU model is run with an existing LSTM model for the same ticker, the app
 ## License
 
 MIT License
+
+## Project Structure
+
+```
+ClawFoxyVision/
+├── src/                    # Main source code
+│   ├── util/              # Utility functions
+│   ├── daily/             # Daily data processing
+│   ├── minute/            # Minute data processing
+│   ├── constants/         # Project constants
+│   └── test/             # Test files and utilities
+├── examples/              # Example code
+│   └── csv/              # Sample data files
+└── .cursor/              # Cursor IDE configuration
+    └── baseline.json     # Project baseline
+```
+
+## Coding Standards
+
+### Rust Style Guide
+
+- **Formatting**:
+  - Max line length: 100 characters
+  - Use spaces (4) for indentation
+  - No tabs
+
+- **Naming Conventions**:
+  - Modules: `snake_case`
+  - Functions: `snake_case`
+  - Structs: `PascalCase`
+  - Traits: `PascalCase`
+  - Constants: `SCREAMING_SNAKE_CASE`
+
+- **Documentation**:
+  - All public items must be documented
+  - Use rustdoc style
+  - Include sections for Arguments, Returns, and Examples
+
+### Data Processing
+
+#### File Handling
+- Use `rustalib::read_financial_data` for all financial data operations
+- Supported file formats:
+  - CSV
+  - Parquet
+- Required columns:
+  - symbol
+  - datetime
+  - open
+  - high
+  - low
+  - close
+  - volume
+- Optional columns:
+  - adjusted_close
+
+Example usage:
+```rust
+use rustalib;
+
+// Read financial data from CSV or Parquet
+let df = rustalib::read_financial_data(file_path, true)?;
+```
+
+### Model Guidelines
+
+#### LSTM Default Parameters
+- sequence_length: 30
+- hidden_size: 64
+- num_layers: 2
+- dropout_rate: 0.2
+
+#### GRU Default Parameters
+- sequence_length: 30
+- hidden_size: 64
+- num_layers: 2
+- dropout_rate: 0.2
+
+## Dependencies
+
+### Required
+- polars (>=0.47.1): Data manipulation
+- burn (>=0.17.0): Deep learning framework
+- chrono (>=0.4.41): Date and time handling
+- anyhow (>=1.0.98): Error handling
+- rustalib (>=1.0.0): Financial data processing
+
+### Optional
+- rayon (>=1.10.0): Parallel processing
+- serde (>=1.0.219): Serialization
+
+### Version Policy
+- Never downgrade dependencies
+- Use caret (^) versioning to allow compatible updates
+- Pin versions only when necessary for stability
+- Regularly update dependencies to latest compatible versions
+- Test thoroughly after dependency updates
+
+## Getting Started
+
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   cargo build
+   ```
+3. Run examples:
+   ```bash
+   cargo run --example lstm_example
+   cargo run --example gru_example
+   ```
+
+## Development Guidelines
+
+1. **Module Organization**:
+   - One file per module
+   - Tests adjacent to source files
+   - Examples in the examples directory
+
+2. **Error Handling**:
+   - Use `anyhow::Result` for error propagation
+   - Provide meaningful error messages
+   - Handle all potential error cases
+
+3. **Testing**:
+   - Write unit tests for all public functions
+   - Include integration tests for complex features
+   - Maintain test coverage above 80%
+
+4. **Documentation**:
+   - Keep documentation up to date
+   - Include examples in doc comments
+   - Document all public APIs
+
+## Contributing
+
+1. Follow the coding standards
+2. Add tests for new features
+3. Update documentation
+4. Submit pull requests with clear descriptions
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Examples
+
+The repository includes several example implementations to demonstrate the usage of LSTM and GRU models:
+
+### Standalone Examples
+
+- **standalone_lstm_gru_daily.rs**: A self-contained example that demonstrates both LSTM and GRU models for daily stock price prediction. It includes:
+  - Forward pass timing comparisons
+  - Loss calculation
+  - Implementation with both regular tensors and autodiff tensors
+  - Architecture comparison
+
+- **simplified_lstm_gru_comparison.rs**: A comprehensive comparison between LSTM and GRU models focusing on:
+  - Performance metrics (speed and accuracy)
+  - Architecture differences
+  - Forward pass implementation
+  - Layer-by-layer configuration
+
+### Other Examples
+
+- **daily_lstm_example.rs**: LSTM implementation for daily data
+- **daily_gru_example.rs**: GRU implementation for daily data
+- **daily_model_comparison.rs**: Comparison between daily LSTM and GRU models
+- **lstm_example.rs**: Basic LSTM implementation
+- **gru_example.rs**: Basic GRU implementation
+- **compare_models.rs**: Utility for detailed model comparison
+
+## Burn 0.17.0 API Notes
+
+Our examples use the Burn 0.17.0 neural network API. There are some important implementation details to be aware of:
+
+### LSTM Implementation
+
+The LSTM forward method returns a tuple containing the output tensor and a state:
+
+```rust
+// LSTM forward signature
+fn forward(&self, x: Tensor<B, 3>, state: Option<LstmState<B, 2>>) -> (Tensor<B, 3>, LstmState<B, 2>)
+
+// Usage example
+let (output, _) = lstm.forward(x, None);
+```
+
+### GRU Implementation
+
+The GRU forward method returns just the output tensor:
+
+```rust
+// GRU forward signature
+fn forward(&self, x: Tensor<B, 3>, state: Option<Tensor<B, 2>>) -> Tensor<B, 3>
+
+// Usage example
+let output = gru.forward(x, None);
+```
+
+### Tensor Operations
+
+When working with tensors, be careful with moved values. It's often necessary to:
+- Store dimension values before using tensor operations
+- Clone tensors that will be used multiple times
+
+```rust
+// Get dimensions before using tensor
+let sequence_length = output.dims()[1];
+let hidden_size = output.dims()[2];
+
+// Shape transformation
+let last_output = output.narrow(1, sequence_length - 1, 1)
+                       .reshape([batch_size, hidden_size]);
+```
+
+### Generic Backend Type
+
+When using autodiff backends, make sure to specify the type explicitly:
+
+```rust
+let auto_lstm_model: StockModel<AutoDevice> = StockModel::new(&lstm_config, &auto_device);
+```
