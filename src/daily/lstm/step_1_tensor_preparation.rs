@@ -9,6 +9,9 @@ use polars_utils::float::IsFloat;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
+use rustalib::indicators::moving_averages::{calculate_ema, calculate_sma};
+use rustalib::indicators::oscillators::{calculate_macd, calculate_rsi};
+use rustalib::indicators::volatility::{calculate_atr, calculate_bollinger_bands};
 use rustalib::util::file_utils::read_financial_data;
 use serde_json;
 use std::convert::Into;
@@ -39,10 +42,67 @@ pub const DAILY_FEATURES: [&str; 8] = [
 /// Returns a DataFrame with the data
 pub fn load_daily_csv(csv_path: &str) -> PolarsResult<DataFrame> {
     // Read csv file
-    let (df, _) = read_financial_data(csv_path)?;
+    let (mut df, _) = read_financial_data(csv_path)?;
+    
+    // Handle capitalized column names by standardizing them to lowercase
+    let mut rename_columns = Vec::new();
+    
+    // First identify columns to rename based on lowercase matching
+    for column_name in df.get_column_names() {
+        let col_lower = column_name.to_lowercase();
+        
+        // Map each column to a standard name based on case-insensitive matching
+        let standard_name = match col_lower.as_str() {
+            "open" | "o" | "op" | "openprice" | "open_price" => "open",
+            "high" | "h" | "highprice" | "high_price" | "max" => "high",
+            "low" | "l" | "lowprice" | "low_price" | "min" => "low",
+            "close" | "c" | "cl" | "closeprice" | "close_price" => "close",
+            "volume" | "vol" | "v" | "volumes" => "volume",
+            "timestamp" | "time" | "date" | "t" | "datetime" | "dt" | "day" => "time",
+            "vwap" | "vwavg" | "vw" | "vwprice" | "volumeweightedavgprice" => "vwap",
+            "adj close" | "adj_close" | "adjusted close" | "adjusted_close" | "adjclose" | "adj" => "adjusted_close",
+            _ => continue,
+        };
+        
+        // If the column needs to be renamed (case is different)
+        if column_name != standard_name {
+            rename_columns.push((column_name.to_string(), standard_name.to_string()));
+        }
+    }
+    
+    println!("Original columns: {:?}", df.get_column_names());
+    println!("Columns to rename: {:?}", rename_columns);
+    
+    // Use DataFrame's lazy API to apply all transformations at once
+    let mut lazy_df = df.clone().lazy();
+    
+    // Apply all column renames
+    for (old_name, new_name) in rename_columns {
+        lazy_df = lazy_df.with_column(col(&old_name).alias(&new_name));
+    }
+    
+    // Apply all transformations
+    df = lazy_df.collect()?;
+    
+    // Cast volume to Float64 if it exists in the dataframe
+    if df.schema().contains("volume") {
+        let volume = df.column("volume")?;
+        let volume_f64 = volume.cast(&DataType::Float64)?;
+        df.with_column(volume_f64)?;
+    }
+    
+    // Add the adjusted_close column if it doesn't exist (using close as a fallback)
+    if !df.schema().contains("adjusted_close") && df.schema().contains("close") {
+        let close = df.column("close")?.clone();
+        df.with_column(close.with_name("adjusted_close".into()))?;
+    }
+    
+    println!("DataFrame columns after renaming: {:?}", df.get_column_names());
 
-    // Add derived features
-    add_daily_features(&mut df.clone())?;
+    // Add derived features - important fix: directly update df instead of cloning
+    add_daily_features(&mut df)?;
+    
+    println!("DataFrame columns after adding features: {:?}", df.get_column_names());
 
     Ok(df)
 }
@@ -57,6 +117,33 @@ pub fn load_daily_csv(csv_path: &str) -> PolarsResult<DataFrame> {
 ///
 /// Returns a Result indicating success or failure
 fn add_daily_features(df: &mut DataFrame) -> PolarsResult<()> {
+    let df_height = df.height();
+    
+    // Make sure all numerical columns are cast to Float64
+    for col_name in ["open", "high", "low", "close", "volume", "vwap"].iter() {
+        if df.schema().contains(col_name) {
+            let col = df.column(col_name)?;
+            let col_f64 = col.cast(&DataType::Float64)?;
+            df.with_column(col_f64)?;
+        }
+    }
+    
+    // Helper function to ensure all series have the same length as the DataFrame
+    fn ensure_same_length(series: Series, df_height: usize) -> Series {
+        if series.len() < df_height {
+            // Pad with nulls at the beginning to match DataFrame height
+            let missing = df_height - series.len();
+            let mut padded = vec![None; missing];
+            // Collect the series values
+            let values: Vec<Option<f64>> = series.f64().unwrap().into_iter().collect();
+            // Append the non-null values
+            padded.extend(values);
+            Series::new(series.name().to_string().into(), padded)
+        } else {
+            series
+        }
+    }
+    
     // Calculate returns (daily percent change)
     let close = df.column("close")?.f64()?;
     let close_shifted = close.clone().shift(1);
@@ -72,7 +159,7 @@ fn add_daily_features(df: &mut DataFrame) -> PolarsResult<()> {
     // Calculate price range (high - low) / close
     let high = df.column("high")?.f64()?;
     let low = df.column("low")?.f64()?;
-    let close_iter = close.clone();
+    let close_iter = df.column("close")?.f64()?;
     let price_range = high
         .into_iter()
         .zip(low.into_iter())
@@ -89,6 +176,43 @@ fn add_daily_features(df: &mut DataFrame) -> PolarsResult<()> {
     // Add both series at once to avoid multiple mutable borrows
     df.with_column(returns_series)?
         .with_column(price_range_series)?;
+        
+    // Add technical indicators using rustalib
+    // SMA
+    let sma_20 = calculate_sma(df, "close", 20)?;
+    let sma_20 = ensure_same_length(sma_20.with_name("sma_20".into()), df_height);
+    df.with_column(sma_20)?;
+    
+    let sma_50 = calculate_sma(df, "close", 50)?;
+    let sma_50 = ensure_same_length(sma_50.with_name("sma_50".into()), df_height);
+    df.with_column(sma_50)?;
+    
+    // EMA
+    let ema_20 = calculate_ema(df, "close", 20)?;
+    let ema_20 = ensure_same_length(ema_20.with_name("ema_20".into()), df_height);
+    df.with_column(ema_20)?;
+    
+    // RSI
+    let rsi_14 = calculate_rsi(df, 14, "close")?;
+    let rsi_14 = ensure_same_length(rsi_14.with_name("rsi_14".into()), df_height);
+    df.with_column(rsi_14)?;
+    
+    // MACD
+    let (macd_series, signal_series) = calculate_macd(df, 12, 26, 9, "close")?;
+    let macd_series = ensure_same_length(macd_series.with_name("macd".into()), df_height);
+    let signal_series = ensure_same_length(signal_series.with_name("macd_signal".into()), df_height);
+    df.with_column(macd_series)?;
+    df.with_column(signal_series)?;
+    
+    // Bollinger Bands
+    let (bb_middle, bb_upper, bb_lower) = calculate_bollinger_bands(df, 20, 2.0, "close")?;
+    let bb_middle = ensure_same_length(bb_middle.with_name("bb_middle".into()), df_height);
+    df.with_column(bb_middle)?;
+    
+    // ATR
+    let atr_14 = calculate_atr(df, 14)?;
+    let atr_14 = ensure_same_length(atr_14.with_name("atr_14".into()), df_height);
+    df.with_column(atr_14)?;
 
     Ok(())
 }

@@ -17,6 +17,9 @@ use chrono::{Duration, NaiveDateTime};
 use polars::prelude::*;
 use rand::rng;
 use rand::Rng;
+use rustalib::indicators::moving_averages::{calculate_ema, calculate_sma};
+use rustalib::indicators::oscillators::{calculate_macd, calculate_rsi};
+use rustalib::indicators::volatility::{calculate_atr, calculate_bollinger_bands};
 
 // Internal imports
 use crate::minute::gru::step_2_gru_cell::GRU;
@@ -96,333 +99,101 @@ fn generate_test_dataframe(num_rows: usize) -> Result<DataFrame> {
     // Create a symbol column (all the same value)
     let symbol = vec!["AAPL".to_string(); num_rows];
 
-    // Clone vectors before using them in Series
-    let high_prices_clone = high_prices.clone();
-    let low_prices_clone = low_prices.clone();
-
     // Create base DataFrame
     let df = DataFrame::new(vec![
         Series::new("time".into(), times).into(),
         Series::new("symbol".into(), symbol).into(),
         Series::new("close".into(), close_prices.clone()).into(),
-        Series::new("open".into(), open_prices).into(),
-        Series::new("high".into(), high_prices).into(),
-        Series::new("low".into(), low_prices).into(),
+        Series::new("open".into(), open_prices.clone()).into(),
+        Series::new("high".into(), high_prices.clone()).into(),
+        Series::new("low".into(), low_prices.clone()).into(),
         Series::new("volume".into(), volume).into(),
     ])?;
 
-    // Add technical indicators
-    // SMA 20
-    let sma_20 = Series::new("sma_20".into(), compute_sma(&close_prices, 20)).into();
-    // SMA 50
-    let sma_50 = Series::new("sma_50".into(), compute_sma(&close_prices, 50)).into();
-    // EMA 20
-    let ema_20 = Series::new("ema_20".into(), compute_ema(&close_prices, 20)).into();
-    // RSI 14
-    let rsi_14 = Series::new("rsi_14".into(), compute_rsi(&close_prices, 14)).into();
-    // MACD
-    let (macd, signal) = compute_macd(&close_prices);
-    let macd_series = Series::new("macd".into(), macd).into();
-    let macd_signal = Series::new("macd_signal".into(), signal).into();
-    // Bollinger Band Middle
-    let bb_middle = Series::new("bb_middle".into(), compute_sma(&close_prices, 20)).into();
-    // ATR 14
-    let atr_14 = Series::new(
-        "atr_14".into(),
-        compute_atr(&close_prices, &high_prices_clone, &low_prices_clone, 14),
-    )
-    .into();
-    // Returns
-    let returns = Series::new("returns".into(), compute_returns(&close_prices)).into();
-    // Price Range
-    let price_range = Series::new(
-        "price_range".into(),
-        compute_price_range(&high_prices_clone, &low_prices_clone),
-    )
-    .into();
+    // Add technical indicators using rustalib
+    // Function to ensure consistent length between original DataFrame and indicator Series
+    fn ensure_consistent_length(df: &DataFrame, series: Series, name: &str) -> Result<Series> {
+        let missing_len = df.height() - series.len();
+        if missing_len > 0 {
+            // Use 0.0 as default value for most indicators
+            let mut fill_values = vec![0.0; missing_len];
+            let values: Vec<f64> = series.f64()?.iter().map(|opt| opt.unwrap_or(0.0)).collect();
+            fill_values.extend(values);
+            Ok(Series::new(name.into(), fill_values))
+        } else {
+            Ok(series)
+        }
+    }
 
-    // Add technical indicators to DataFrame
+    // SMA
+    let sma_20 = calculate_sma(&df, "close", 20)?;
+    let sma_20 = ensure_consistent_length(&df, sma_20, "sma_20")?;
+    
+    let sma_50 = calculate_sma(&df, "close", 50)?;
+    let sma_50 = ensure_consistent_length(&df, sma_50, "sma_50")?;
+    
+    // EMA
+    let ema_20 = calculate_ema(&df, "close", 20)?;
+    let ema_20 = ensure_consistent_length(&df, ema_20, "ema_20")?;
+    
+    // RSI
+    let mut rsi_14 = calculate_rsi(&df, 14, "close")?;
+    // Fill the missing value with neutral RSI (50.0)
+    let missing_len = df.height() - rsi_14.len();
+    if missing_len > 0 {
+        let mut fill_values = vec![50.0; missing_len];
+        let rsi_values: Vec<f64> = rsi_14.f64()?.iter().map(|opt| opt.unwrap_or(50.0)).collect();
+        fill_values.extend(rsi_values);
+        rsi_14 = Series::new("rsi_14".into(), fill_values);
+    }
+    
+    // MACD
+    let (macd_series, signal_series) = calculate_macd(&df, 12, 26, 9, "close")?;
+    let macd_series = ensure_consistent_length(&df, macd_series, "macd")?;
+    let signal_series = ensure_consistent_length(&df, signal_series, "macd_signal")?;
+    
+    // Bollinger Bands
+    let (bb_middle, _, _) = calculate_bollinger_bands(&df, 20, 2.0, "close")?;
+    let bb_middle = ensure_consistent_length(&df, bb_middle, "bb_middle")?;
+    
+    // ATR
+    let atr_14 = calculate_atr(&df, 14)?;
+    let atr_14 = ensure_consistent_length(&df, atr_14, "atr_14")?;
+    
+    // Calculate simple returns (not included in rustalib)
+    let mut returns = Vec::with_capacity(close_prices.len());
+    returns.push(0.0); // First point has no return
+    
+    for i in 1..close_prices.len() {
+        let prev = close_prices[i-1];
+        let curr = close_prices[i];
+        returns.push(if prev != 0.0 { (curr - prev) / prev } else { 0.0 });
+    }
+    
+    // Calculate price range (High - Low) / Close (not included in rustalib)
+    let mut price_range = Vec::with_capacity(close_prices.len());
+    for i in 0..close_prices.len() {
+        let high = high_prices[i];
+        let low = low_prices[i];
+        let close = close_prices[i];
+        price_range.push(if close != 0.0 { (high - low) / close } else { 0.0 });
+    }
+
+    // Add technical indicators to the DataFrame
     df.hstack(&[
-        sma_20,
-        sma_50,
-        ema_20,
-        rsi_14,
-        macd_series,
-        macd_signal,
-        bb_middle,
-        atr_14,
-        returns,
-        price_range,
+        sma_20.with_name("sma_20".into()).into(),
+        sma_50.with_name("sma_50".into()).into(),
+        ema_20.with_name("ema_20".into()).into(),
+        rsi_14.with_name("rsi_14".into()).into(),
+        macd_series.with_name("macd".into()).into(),
+        signal_series.with_name("macd_signal".into()).into(),
+        bb_middle.with_name("bb_middle".into()).into(),
+        atr_14.with_name("atr_14".into()).into(),
+        Series::new("returns".into(), returns).into(),
+        Series::new("price_range".into(), price_range).into(),
     ])?;
 
     Ok(df)
-}
-
-/// Calculates Simple Moving Average (SMA) for the given data and period
-///
-/// # Arguments
-///
-/// * `data` - Slice of price data
-/// * `period` - Moving average period
-///
-/// # Returns
-///
-/// Vector of SMA values with the same length as input data
-fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
-    let mut result = Vec::with_capacity(data.len());
-
-    // Handle edge cases
-    if data.is_empty() {
-        return result;
-    }
-
-    if period == 0 || period > data.len() {
-        // Invalid period, return the original data
-        return data.to_vec();
-    }
-
-    // For the first (period-1) points, we don't have enough data for SMA
-    // So we'll just use the data points themselves
-    for _i in 0..period - 1 {
-        result.push(data[_i]);
-    }
-
-    // For the remaining points, calculate SMA
-    for i in period - 1..data.len() {
-        let start_idx = if i >= period { i - period + 1 } else { 0 };
-        let sum: f64 = data[start_idx..=i].iter().sum();
-        let window_size = i - start_idx + 1;
-        result.push(sum / window_size as f64);
-    }
-
-    result
-}
-
-/// Calculates Exponential Moving Average (EMA) for the given data and period
-///
-/// # Arguments
-///
-/// * `data` - Slice of price data
-/// * `period` - Moving average period
-///
-/// # Returns
-///
-/// Vector of EMA values with the same length as input data
-fn compute_ema(data: &[f64], period: usize) -> Vec<f64> {
-    let mut result = Vec::with_capacity(data.len());
-
-    // Handle edge cases
-    if data.is_empty() {
-        return result;
-    }
-
-    if period == 0 || period > data.len() {
-        // Invalid period, return the original data
-        return data.to_vec();
-    }
-
-    let alpha = 2.0 / (period as f64 + 1.0);
-
-    // Start with SMA for the first period points
-    let first_sma = data.iter().take(period).sum::<f64>() / period as f64;
-
-    // Fill initial values before we have a full period
-    for i in 0..period {
-        if i < period - 1 {
-            result.push(data[i]); // Use the original data for early points
-        } else {
-            result.push(first_sma); // Use SMA for the period-th point
-        }
-    }
-
-    // Calculate EMA for the rest
-    for i in period..data.len() {
-        let ema = alpha * data[i] + (1.0 - alpha) * result[i - 1];
-        result.push(ema);
-    }
-
-    result
-}
-
-/// Calculates Relative Strength Index (RSI) for the given data and period
-///
-/// # Arguments
-///
-/// * `data` - Slice of price data
-/// * `period` - RSI period (typically 14)
-///
-/// # Returns
-///
-/// Vector of RSI values with the same length as input data
-fn compute_rsi(data: &[f64], period: usize) -> Vec<f64> {
-    let mut result = Vec::with_capacity(data.len());
-    let mut gains = Vec::with_capacity(data.len());
-    let mut losses = Vec::with_capacity(data.len());
-
-    // Calculate daily gains and losses
-    gains.push(0.0);
-    losses.push(0.0);
-
-    for i in 1..data.len() {
-        let diff = data[i] - data[i - 1];
-        if diff > 0.0 {
-            gains.push(diff);
-            losses.push(0.0);
-        } else {
-            gains.push(0.0);
-            losses.push(-diff);
-        }
-    }
-
-    // Placeholder for early points
-    for _i in 0..period {
-        result.push(50.0); // Neutral RSI
-    }
-
-    // Calculate RSI
-    for i in period..data.len() {
-        let avg_gain: f64 = gains[(i - period + 1)..=i].iter().sum::<f64>() / period as f64;
-        let avg_loss: f64 = losses[(i - period + 1)..=i].iter().sum::<f64>() / period as f64;
-
-        if avg_loss.abs() < 1e-10 {
-            result.push(100.0);
-        } else {
-            let rs = avg_gain / avg_loss;
-            let rsi = 100.0 - (100.0 / (1.0 + rs));
-            result.push(rsi);
-        }
-    }
-
-    result
-}
-
-/// Calculates Moving Average Convergence Divergence (MACD) for the given data
-///
-/// Uses default periods of 12 (fast), 26 (slow), and 9 (signal)
-///
-/// # Arguments
-///
-/// * `data` - Slice of price data
-///
-/// # Returns
-///
-/// Tuple containing (MACD line, Signal line)
-fn compute_macd(data: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    // Define default periods
-    let fast_period = 12;
-    let slow_period = 26;
-    let signal_period = 9;
-
-    // Create result vectors
-    let mut macd = vec![0.0; data.len()];
-    let mut signal = vec![0.0; data.len()];
-
-    // Handle edge cases
-    if data.len() <= slow_period {
-        // Not enough data for proper calculation, return zeros
-        return (macd, signal);
-    }
-
-    // Calculate EMAs
-    let fast_ema = compute_ema(data, fast_period);
-    let slow_ema = compute_ema(data, slow_period);
-
-    // Calculate MACD line
-    for i in 0..data.len() {
-        macd[i] = fast_ema[i] - slow_ema[i];
-    }
-
-    // Calculate signal line (EMA of MACD)
-    if data.len() > signal_period {
-        signal = compute_ema(&macd, signal_period);
-    }
-
-    (macd, signal)
-}
-
-/// Calculates Average True Range (ATR) for the given data and period
-///
-/// # Arguments
-///
-/// * `close` - Slice of close price data
-/// * `high` - Slice of high price data
-/// * `low` - Slice of low price data
-/// * `period` - ATR period (typically 14)
-///
-/// # Returns
-///
-/// Vector of ATR values with the same length as input data
-fn compute_atr(close: &[f64], high: &[f64], low: &[f64], period: usize) -> Vec<f64> {
-    let mut result = Vec::with_capacity(close.len());
-    let mut tr = Vec::with_capacity(close.len());
-
-    // Calculate True Range
-    tr.push(high[0] - low[0]); // First TR is simply High - Low
-
-    for i in 1..close.len() {
-        let tr1 = high[i] - low[i];
-        let tr2 = (high[i] - close[i - 1]).abs();
-        let tr3 = (low[i] - close[i - 1]).abs();
-        tr.push(tr1.max(tr2).max(tr3));
-    }
-
-    // Placeholder for early points
-    for _i in 0..period {
-        result.push(tr[0]); // Use first TR value as placeholder
-    }
-
-    // Calculate ATR
-    let first_atr = tr.iter().take(period).sum::<f64>() / period as f64;
-    result[period - 1] = first_atr;
-
-    for i in period..close.len() {
-        let atr = ((period - 1) as f64 * result[i - 1] + tr[i]) / period as f64;
-        result.push(atr);
-    }
-
-    result
-}
-
-/// Calculates percentage returns for the given price data
-///
-/// # Arguments
-///
-/// * `data` - Slice of price data
-///
-/// # Returns
-///
-/// Vector of percentage returns with the same length as input data
-fn compute_returns(data: &[f64]) -> Vec<f64> {
-    let mut result = Vec::with_capacity(data.len());
-
-    result.push(0.0); // First point has no previous price
-
-    for i in 1..data.len() {
-        let ret = (data[i] - data[i - 1]) / data[i - 1];
-        result.push(ret);
-    }
-
-    result
-}
-
-/// Calculates price range as percentage of low price
-///
-/// # Arguments
-///
-/// * `high` - Slice of high price data
-/// * `low` - Slice of low price data
-///
-/// # Returns
-///
-/// Vector of price range values with the same length as input data
-fn compute_price_range(high: &[f64], low: &[f64]) -> Vec<f64> {
-    let mut result = Vec::with_capacity(high.len());
-
-    for i in 0..high.len() {
-        result.push((high[i] - low[i]) / low[i]);
-    }
-
-    result
 }
 
 /// Tests that the GRU cell correctly performs forward pass with proper dimensions

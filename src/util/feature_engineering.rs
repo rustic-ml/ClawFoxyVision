@@ -1,7 +1,10 @@
 // External crates
 use polars::prelude::*;
 
-// Use the ta-lib-in-rust library for technical indicators
+// Use rustalib for technical indicators
+use rustalib::indicators::moving_averages::{calculate_ema, calculate_sma};
+use rustalib::indicators::oscillators::{calculate_macd, calculate_rsi};
+use rustalib::indicators::volatility::{calculate_atr, calculate_bollinger_bands};
 
 /// Calculates lagged features for a given column
 pub fn calculate_lagged_features(
@@ -56,6 +59,7 @@ pub fn calculate_period_returns(df: &DataFrame, periods: &[usize]) -> PolarsResu
 pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
     // Clone the DataFrame to avoid borrowing issues
     let mut result_df = df.clone();
+    let df_height = result_df.height();
 
     // Ensure all price columns are Float64
     for col_name in ["open", "high", "low", "close", "volume"].iter() {
@@ -67,12 +71,35 @@ pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
         }
     }
 
-    // Add simple moving averages for key indicators
-    add_simple_sma(&mut result_df, "close", 20, "sma_20")?;
-    add_simple_sma(&mut result_df, "close", 50, "sma_50")?;
+    // Helper function to ensure all series have the same length as the DataFrame
+    fn ensure_same_length(series: Series, df_height: usize) -> Series {
+        if series.len() < df_height {
+            // Pad with nulls at the beginning to match DataFrame height
+            let missing = df_height - series.len();
+            let mut padded = vec![None; missing];
+            // Collect the series values
+            let values: Vec<Option<f64>> = series.f64().unwrap().into_iter().collect();
+            // Append the non-null values
+            padded.extend(values);
+            Series::new(series.name().to_string().into(), padded)
+        } else {
+            series
+        }
+    }
 
-    // Add exponential moving average (approximated as simple for now)
-    add_simple_sma(&mut result_df, "close", 20, "ema_20")?;
+    // Add SMA using rustalib
+    let sma_20 = calculate_sma(&result_df, "close", 20)?;
+    let sma_20 = ensure_same_length(sma_20.with_name("sma_20".into()), df_height);
+    result_df.with_column(sma_20)?;
+    
+    let sma_50 = calculate_sma(&result_df, "close", 50)?;
+    let sma_50 = ensure_same_length(sma_50.with_name("sma_50".into()), df_height);
+    result_df.with_column(sma_50)?;
+
+    // Add EMA using rustalib
+    let ema_20 = calculate_ema(&result_df, "close", 20)?;
+    let ema_20 = ensure_same_length(ema_20.with_name("ema_20".into()), df_height);
+    result_df.with_column(ema_20)?;
 
     // Calculate returns
     let close_series = result_df.column("close")?.clone();
@@ -116,209 +143,31 @@ pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
 
     result_df.with_column(Series::new("price_range".into(), price_range))?;
 
-    // Calculate RSI 14 with a simplified approach
-    add_rsi(&mut result_df, "close", 14, "rsi_14")?;
+    // Add RSI using rustalib
+    let rsi_14 = calculate_rsi(&result_df, 14, "close")?;
+    let rsi_14 = ensure_same_length(rsi_14.with_name("rsi_14".into()), df_height);
+    result_df.with_column(rsi_14)?;
 
-    // Add MACD (use simple SMA as approximation for now)
-    add_simple_sma(&mut result_df, "close", 12, "ema_12")?;
-    add_simple_sma(&mut result_df, "close", 26, "ema_26")?;
+    // Add MACD using rustalib
+    let (macd_series, signal_series) = calculate_macd(&result_df, 12, 26, 9, "close")?;
+    let macd_series = ensure_same_length(macd_series.with_name("macd".into()), df_height);
+    let signal_series = ensure_same_length(signal_series.with_name("macd_signal".into()), df_height);
+    result_df.with_column(macd_series)?;
+    result_df.with_column(signal_series)?;
 
-    // Create MACD series manually
-    let ema_12_vals: Vec<Option<f64>> = result_df.column("ema_12")?.f64()?.into_iter().collect();
-    let ema_26_vals: Vec<Option<f64>> = result_df.column("ema_26")?.f64()?.into_iter().collect();
+    // Add Bollinger Bands using rustalib
+    let (bb_middle, bb_upper, bb_lower) = calculate_bollinger_bands(&result_df, 20, 2.0, "close")?;
+    let bb_middle = ensure_same_length(bb_middle.with_name("bb_middle".into()), df_height);
+    let bb_upper = ensure_same_length(bb_upper.with_name("bb_upper".into()), df_height);
+    let bb_lower = ensure_same_length(bb_lower.with_name("bb_lower".into()), df_height);
+    result_df.with_column(bb_middle)?;
+    result_df.with_column(bb_upper)?;
+    result_df.with_column(bb_lower)?;
 
-    let mut macd = Vec::with_capacity(ema_12_vals.len());
-    for i in 0..ema_12_vals.len() {
-        if let (Some(e12), Some(e26)) = (ema_12_vals[i], ema_26_vals[i]) {
-            macd.push(Some(e12 - e26));
-        } else {
-            macd.push(None);
-        }
-    }
-
-    result_df.with_column(Series::new("macd".into(), macd.clone()))?;
-
-    // Add signal line (9-day SMA of MACD)
-    add_simple_sma_from_values(&mut result_df, &macd, 9, "macd_signal")?;
-
-    // Bollinger Bands
-    add_simple_sma(&mut result_df, "close", 20, "bb_middle")?;
-
-    // Calculate ATR (Average True Range)
-    add_atr(&mut result_df, 14, "atr_14")?;
+    // Add ATR using rustalib
+    let atr_14 = calculate_atr(&result_df, 14)?;
+    let atr_14 = ensure_same_length(atr_14.with_name("atr_14".into()), df_height);
+    result_df.with_column(atr_14)?;
 
     Ok(result_df)
-}
-
-/// Helper function to add Simple Moving Average
-fn add_simple_sma(
-    df: &mut DataFrame,
-    column: &str,
-    window: usize,
-    new_name: &str,
-) -> PolarsResult<()> {
-    let series = df.column(column)?.f64()?;
-    let values: Vec<Option<f64>> = series.into_iter().collect();
-    let mut sma = Vec::with_capacity(values.len());
-
-    // Fill with None for the first window-1 elements
-    for _ in 0..window.min(values.len()) - 1 {
-        sma.push(None);
-    }
-
-    // Calculate SMA for the rest
-    for i in window - 1..values.len() {
-        let window_vals: Vec<f64> = values[i + 1 - window..=i]
-            .iter()
-            .filter_map(|&v| v)
-            .collect();
-
-        if !window_vals.is_empty() {
-            let mean = window_vals.iter().sum::<f64>() / window_vals.len() as f64;
-            sma.push(Some(mean));
-        } else {
-            sma.push(None);
-        }
-    }
-
-    df.with_column(Series::new(new_name.into(), sma))?;
-    Ok(())
-}
-
-/// Helper function to add SMA from raw values
-fn add_simple_sma_from_values(
-    df: &mut DataFrame,
-    values: &[Option<f64>],
-    window: usize,
-    new_name: &str,
-) -> PolarsResult<()> {
-    let mut sma = Vec::with_capacity(values.len());
-
-    // Fill with None for the first window-1 elements
-    for _ in 0..window.min(values.len()) - 1 {
-        sma.push(None);
-    }
-
-    // Calculate SMA for the rest
-    for i in window - 1..values.len() {
-        let window_vals: Vec<f64> = values[i + 1 - window..=i]
-            .iter()
-            .filter_map(|&v| v)
-            .collect();
-
-        if !window_vals.is_empty() {
-            let mean = window_vals.iter().sum::<f64>() / window_vals.len() as f64;
-            sma.push(Some(mean));
-        } else {
-            sma.push(None);
-        }
-    }
-
-    df.with_column(Series::new(new_name.into(), sma))?;
-    Ok(())
-}
-
-/// Add RSI calculation
-fn add_rsi(df: &mut DataFrame, column: &str, period: usize, new_name: &str) -> PolarsResult<()> {
-    let close_vals: Vec<Option<f64>> = df.column(column)?.f64()?.into_iter().collect();
-
-    // Calculate up/down movements
-    let mut up = Vec::with_capacity(close_vals.len());
-    let mut down = Vec::with_capacity(close_vals.len());
-
-    // First value has no change
-    up.push(None);
-    down.push(None);
-
-    for i in 1..close_vals.len() {
-        if let (Some(curr), Some(prev)) = (close_vals[i], close_vals[i - 1]) {
-            let change = curr - prev;
-            if change > 0.0 {
-                up.push(Some(change));
-                down.push(Some(0.0));
-            } else {
-                up.push(Some(0.0));
-                down.push(Some(-change));
-            }
-        } else {
-            up.push(None);
-            down.push(None);
-        }
-    }
-
-    // Calculate SMA of up and down
-    let mut avg_up = Vec::with_capacity(up.len());
-    let mut avg_down = Vec::with_capacity(down.len());
-
-    // Fill with None for the first period-1 elements
-    for _ in 0..period.min(up.len()) {
-        avg_up.push(None);
-        avg_down.push(None);
-    }
-
-    // Calculate averages for the rest
-    for i in period..up.len() {
-        let up_window: Vec<f64> = up[i + 1 - period..=i].iter().filter_map(|&v| v).collect();
-
-        let down_window: Vec<f64> = down[i + 1 - period..=i].iter().filter_map(|&v| v).collect();
-
-        if !up_window.is_empty() && !down_window.is_empty() {
-            let avg_u = up_window.iter().sum::<f64>() / up_window.len() as f64;
-            let avg_d = down_window.iter().sum::<f64>() / down_window.len() as f64;
-
-            avg_up.push(Some(avg_u));
-            avg_down.push(Some(avg_d));
-        } else {
-            avg_up.push(None);
-            avg_down.push(None);
-        }
-    }
-
-    // Calculate RSI
-    let mut rsi = Vec::with_capacity(avg_up.len());
-    for i in 0..avg_up.len() {
-        if let (Some(u), Some(d)) = (avg_up[i], avg_down[i]) {
-            if d == 0.0 {
-                rsi.push(Some(100.0));
-            } else {
-                let rs = u / d;
-                rsi.push(Some(100.0 - (100.0 / (1.0 + rs))));
-            }
-        } else {
-            rsi.push(None);
-        }
-    }
-
-    df.with_column(Series::new(new_name.into(), rsi))?;
-    Ok(())
-}
-
-/// Add ATR calculation
-fn add_atr(df: &mut DataFrame, period: usize, new_name: &str) -> PolarsResult<()> {
-    let high_vals: Vec<Option<f64>> = df.column("high")?.f64()?.into_iter().collect();
-    let low_vals: Vec<Option<f64>> = df.column("low")?.f64()?.into_iter().collect();
-    let close_vals: Vec<Option<f64>> = df.column("close")?.f64()?.into_iter().collect();
-
-    // Calculate true range
-    let mut tr = Vec::with_capacity(close_vals.len());
-
-    // First value has no previous close
-    tr.push(None);
-
-    for i in 1..close_vals.len() {
-        if let (Some(h), Some(l), Some(prev_c)) = (high_vals[i], low_vals[i], close_vals[i - 1]) {
-            let h_l = h - l;
-            let h_pc = (h - prev_c).abs();
-            let l_pc = (l - prev_c).abs();
-
-            tr.push(Some(h_l.max(h_pc).max(l_pc)));
-        } else {
-            tr.push(None);
-        }
-    }
-
-    // Calculate ATR (simple moving average of true range)
-    add_simple_sma_from_values(df, &tr, period, new_name)?;
-
-    Ok(())
 }

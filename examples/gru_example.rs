@@ -18,6 +18,7 @@ use predict_price_lstm::minute::gru::{step_4_train_model, step_5_prediction};
 use predict_price_lstm::minute::lstm::step_1_tensor_preparation;
 use predict_price_lstm::util::feature_engineering::add_technical_indicators;
 use predict_price_lstm::util::pre_processor;
+use predict_price_lstm::util::file_utils;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -34,13 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading data from: {}", csv_path.display());
 
     // Load data using our read_csv_to_dataframe function
-    let df = pre_processor::read_csv_to_dataframe(
-        &csv_path,
-        false,
-        Some(vec![
-            "symbol", "time", "open", "high", "low", "close", "volume", "vwap",
-        ]),
-    )?;
+    let df = predict_price_lstm::util::file_utils::read_csv_file(&csv_path)?;
 
     // Check data
     println!("Loaded dataframe with {} rows", df.height());
