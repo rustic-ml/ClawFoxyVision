@@ -166,7 +166,8 @@ ClawFoxyVision/
 ### Data Processing
 
 #### File Handling
-- Use `rustalib::read_financial_data` for all financial data operations
+- Use `read_financial_data` as a single entry point for all financial data operations
+- Automatically detects file type based on extension
 - Supported file formats:
   - CSV
   - Parquet
@@ -183,10 +184,12 @@ ClawFoxyVision/
 
 Example usage:
 ```rust
-use rustalib;
+use predict_price_lstm::util::file_utils::read_financial_data;
 
-// Read financial data from CSV or Parquet
-let df = rustalib::read_financial_data(file_path, true)?;
+// Read financial data from either CSV or Parquet with the same function
+let (df, metadata) = read_financial_data("path/to/data.csv")?;
+// OR
+let (df, metadata) = read_financial_data("path/to/data.parquet")?;
 ```
 
 ### Model Guidelines
@@ -234,6 +237,7 @@ let df = rustalib::read_financial_data(file_path, true)?;
    ```bash
    cargo run --example lstm_example
    cargo run --example gru_example
+   cargo run --example parquet_lstm_gru_example  # Example using Parquet files
    ```
 
 ## Development Guidelines
@@ -286,6 +290,13 @@ The repository includes several example implementations to demonstrate the usage
   - Architecture differences
   - Forward pass implementation
   - Layer-by-layer configuration
+
+- **parquet_lstm_gru_example.rs**: A complete example demonstrating how to use Parquet files with LSTM and GRU models:
+  - Reading financial data from Parquet files using the unified read_financial_data function
+  - Adding technical indicators through feature engineering
+  - Processing data with both LSTM and GRU models
+  - Performance timing for both models
+  - Suitable as a starting point for new projects using Parquet files
 
 ### Other Examples
 

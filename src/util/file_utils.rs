@@ -1,28 +1,47 @@
 // External crates
 use polars::prelude::*;
-use rustalib::util::file_utils::read_financial_data;
-use std::fs::File;
+use rustalib::util::file_utils::read_financial_data as rustalib_read_financial_data;
 use std::path::Path;
-use std::sync::Arc;
 
-/// Enhanced CSV reader with case-insensitive column naming
+/// A single entry point for reading financial data from either CSV or Parquet files
 ///
-/// This function wraps the standard read_financial_data function
-/// and adds support for case-insensitive column names and common abbreviations
+/// This function automatically detects the file type based on the extension and 
+/// uses the appropriate reader from RusTaLib to load the data.
 ///
 /// # Arguments
 ///
-/// * `file_path` - Path to the CSV file
+/// * `file_path` - Path to the financial data file (CSV or Parquet)
 ///
 /// # Returns
 ///
 /// Returns a tuple containing the DataFrame with standardized column names and metadata
-pub fn enhanced_read_financial_data<P: AsRef<Path>>(
+pub fn read_financial_data<P: AsRef<Path>>(
     file_path: P,
 ) -> PolarsResult<(DataFrame, rustalib::util::file_utils::FinancialColumns)> {
-    // First read the file using the standard function
-    let (mut df, metadata) = read_financial_data(file_path.as_ref().to_str().unwrap())?;
+    // RusTaLib's read_financial_data already handles both CSV and Parquet files
+    // by examining the file extension
+    let (df, metadata) = rustalib_read_financial_data(file_path.as_ref().to_str().unwrap())?;
     
+    // Process the data through our enhanced pipeline for additional standardization
+    enhanced_process_dataframe(df, metadata)
+}
+
+/// Enhanced financial data processing for standardizing column names
+///
+/// This function adds support for case-insensitive column names and common abbreviations
+///
+/// # Arguments
+///
+/// * `df` - The original DataFrame
+/// * `metadata` - Original financial metadata
+///
+/// # Returns
+///
+/// Returns a tuple containing the DataFrame with standardized column names and metadata
+fn enhanced_process_dataframe(
+    mut df: DataFrame,
+    metadata: rustalib::util::file_utils::FinancialColumns,
+) -> PolarsResult<(DataFrame, rustalib::util::file_utils::FinancialColumns)> {
     // Handle capitalized column names by standardizing them to lowercase
     let mut rename_columns = Vec::new();
     
@@ -83,6 +102,28 @@ pub fn enhanced_read_financial_data<P: AsRef<Path>>(
     Ok((df, metadata))
 }
 
+/// Enhanced CSV reader with case-insensitive column naming
+///
+/// This function wraps the standard read_financial_data function
+/// and adds support for case-insensitive column names and common abbreviations
+///
+/// # Arguments
+///
+/// * `file_path` - Path to the CSV file
+///
+/// # Returns
+///
+/// Returns a tuple containing the DataFrame with standardized column names and metadata
+pub fn enhanced_read_financial_data<P: AsRef<Path>>(
+    file_path: P,
+) -> PolarsResult<(DataFrame, rustalib::util::file_utils::FinancialColumns)> {
+    // First read the file using the standard function
+    let (df, metadata) = rustalib_read_financial_data(file_path.as_ref().to_str().unwrap())?;
+    
+    // Apply our enhanced processing
+    enhanced_process_dataframe(df, metadata)
+}
+
 /// Read a CSV file into a DataFrame with standardized column names
 ///
 /// # Arguments
@@ -97,7 +138,7 @@ pub fn read_csv_to_dataframe<P: AsRef<Path>>(
     file_path: P,
     _has_header: bool,
 ) -> PolarsResult<DataFrame> {
-    let (df, _) = enhanced_read_financial_data(file_path)?;
+    let (df, _) = read_financial_data(file_path)?;
     Ok(df)
 }
 
@@ -128,6 +169,6 @@ pub fn load_and_preprocess<P: AsRef<Path>>(
 ///
 /// Returns a DataFrame containing the CSV data
 pub fn read_csv_file<P: AsRef<Path>>(file_path: P) -> PolarsResult<DataFrame> {
-    let (df, _) = enhanced_read_financial_data(file_path)?;
+    let (df, _) = read_financial_data(file_path)?;
     Ok(df)
 }
