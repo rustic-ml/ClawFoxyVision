@@ -13,11 +13,12 @@ MODEL_TYPE=${2:-lstm}
 MODEL_TYPE=$(echo "$MODEL_TYPE" | tr '[:upper:]' '[:lower:]')
 
 # Validate model type
-if [[ "$MODEL_TYPE" != "lstm" && "$MODEL_TYPE" != "gru" ]]; then
-    echo "Error: model_type must be either 'lstm' or 'gru'"
+if [[ "$MODEL_TYPE" != "lstm" && "$MODEL_TYPE" != "gru" && "$MODEL_TYPE" != "cnnlstm" ]]; then
+    echo "Error: model_type must be either 'lstm', 'gru', or 'cnnlstm'"
     echo "Usage: ./run_model.sh [ticker] [model_type]"
     echo "Example: ./run_model.sh AAPL lstm"
     echo "Example: ./run_model.sh AAPL gru"
+    echo "Example: ./run_model.sh AAPL cnnlstm"
     exit 1
 fi
 

@@ -1,7 +1,22 @@
 [package]
-name = "predict_price_lstm"
+name = "ClawFoxyVision"
 version = "0.1.0"
 edition = "2021"
+description = "ClawFoxyVision: Price prediction using LSTM neural networks"
+license = "MIT"
+authors = ["ClawFoxyVision Team"]
+readme = "README.md"
+repository = "https://github.com/ClawFoxyVision/predict_price_lstm"
+homepage = "https://github.com/ClawFoxyVision/predict_price_lstm"
+documentation = "https://docs.rs/predict_price_lstm"
+keywords = ["time-series", "forecasting", "lstm", "neural-networks", "price-prediction"]
+categories = ["science", "mathematics", "algorithms", "finance"]
+# Exclude files and directories from being included in the published package
+exclude = [
+    "src/test/*",
+    "examples/*",
+    "target/*",
+]
 
 [dependencies]
 polars = { version = "0.47.1", features = ["lazy", 
@@ -26,7 +41,7 @@ rayon = "1.7.0"
 num-traits = "0.2.19"
 rand = "0.9.1"
 polars-utils = "0.47.1"
-rustalib = { path = "/home/orange/workspace/RusTaLib" }
+rustalib = "1.0.8"
 log = "0.4.27"
 
 [build-dependencies]

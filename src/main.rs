@@ -7,7 +7,7 @@ use std::env;
 use std::time::Instant;
 
 // Local modules
-use util::{feature_engineering, file_utils, pre_processor};
+use util::{model_utils, feature_engineering};
 
 use minute::lstm::step_1_tensor_preparation;
 
@@ -25,12 +25,21 @@ pub mod util {
 use rustalib::util::file_utils::read_financial_data;
 
 pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
-    let file_path = format!("{}-ticker_minute_bars.csv", symbol);
+    // The file is now located in examples/csv with a different naming pattern
+    let file_path = format!("{}_minute_ohlcv.csv", symbol);
     let workspace_dir = std::env::current_dir().expect("Failed to get current directory");
-    let full_path = workspace_dir.join(file_path);
+    let full_path = workspace_dir.join("examples").join("csv").join(file_path);
+    
+    println!("Looking for data file at: {}", full_path.display());
 
     match load_data(full_path.to_str().unwrap()) {
-        Ok(df) => Ok(df),
+        Ok(mut df) => {
+            // Add technical indicators using the util::feature_engineering module
+            let df_with_indicators = util::feature_engineering::add_technical_indicators(&mut df)
+                .map_err(|e| PolarsError::ComputeError(format!("Error adding technical indicators: {}", e).into()))?;
+            
+            Ok(df_with_indicators)
+        },
         Err(e) => {
             // Convert the error to a PolarsError
             Err(PolarsError::ComputeError(
@@ -60,11 +69,12 @@ fn main() -> PolarsResult<()> {
         .map(|s| s.to_lowercase())
         .unwrap_or("lstm".to_string());
 
-    if model_type != "lstm" && model_type != "gru" {
-        eprintln!("Error: model_type must be either 'lstm' or 'gru'");
+    if model_type != "lstm" && model_type != "gru" && model_type != "cnnlstm" {
+        eprintln!("Error: model_type must be either 'lstm', 'gru', or 'cnnlstm'");
         eprintln!("Usage: cargo run -- [ticker] [model_type]");
         eprintln!("Example: cargo run -- AAPL lstm");
         eprintln!("Example: cargo run -- AAPL gru");
+        eprintln!("Example: cargo run -- AAPL cnnlstm");
         return Err(PolarsError::ComputeError("Invalid model type".into()));
     }
 
@@ -198,140 +208,150 @@ fn train_and_evaluate(
         }
     } else if model_type == "gru" {
         // Configure GRU training
-        let training_config = minute::gru::step_4_train_model::TrainingConfig {
+        let gru_config = minute::gru::step_4_train_model::TrainingConfig {
             learning_rate: 0.001,
             batch_size: 32,
             epochs: 10,
             test_split: 0.2,
+            // Enhanced dropout
             dropout: constants::DEFAULT_DROPOUT,
-            patience: 5,
+            // Early stopping settings
+            patience: 3,
             min_delta: 0.001,
+            // Use Huber loss to be more robust
             use_huber_loss: true,
-            checkpoint_epochs: 2,
+            // Use bidirectional GRU
             bidirectional: true,
-            num_layers: 1,
+            // Use default for any additional fields
+            ..Default::default()
         };
 
-        let model_name = format!("{}{}", ticker, constants::MODEL_FILE_NAME);
-        model_path =
-            crate::util::model_utils::get_model_path(ticker, model_type).join(model_name.clone());
-        let current_version = env!("CARGO_PKG_VERSION");
+        // GRU model training and evaluation
+        println!("Starting GRU model training...");
+        let forecast_horizon = 390; // full trading day in minutes
+                                // Define BurnBackend inside the function scope to avoid the unused warning
+        type BurnBackend = Autodiff<NdArray<f32>>;
+        let device = NdArrayDevice::default();
 
-        if crate::util::model_utils::is_model_version_current(&model_path, current_version) {
-            // Load the GRU model
-            let (_loaded_gru, _metadata) = crate::util::model_utils::load_trained_gru_model::<
-                BurnBackend,
-            >(ticker, model_type, &model_name, &device)
-            .expect("Failed to load model");
+        // Prepare features and targets for GRU training
+        let (features, targets) = step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
+            &train_df,
+            crate::constants::SEQUENCE_LENGTH,
+            forecast_horizon,
+            &device,
+            false,
+            None,
+        )
+        .map_err(|e| {
+            PolarsError::ComputeError(format!("Feature preparation error: {}", e).into())
+        })?;
 
-            println!(
-                "Loaded existing GRU model with current version: {}",
-                current_version
-            );
-        } else {
-            // Train a new GRU model
-            println!("Starting GRU model training...");
+        println!(
+            "Data prepared for GRU: features shape: {:?}, targets shape: {:?}",
+            features.dims(),
+            targets.dims()
+        );
 
-            // Prepare data tensors for GRU training
-            println!("Preparing data for GRU training...");
-            let mut normalized_df = train_df.clone();
-            minute::lstm::step_1_tensor_preparation::normalize_features(
-                &mut normalized_df,
-                &["close", "open", "high", "low"],
-                false,
-                false,
-            )
-            .map_err(|e| {
-                PolarsError::ComputeError(format!("Data normalization error: {}", e).into())
-            })?;
-
-            // Create tensors
-            let forecast_horizon = 390; // full trading day in minutes
-            let (features, targets) =
-                minute::lstm::step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
-                    &normalized_df,
-                    constants::SEQUENCE_LENGTH,
-                    forecast_horizon,
-                    &device,
-                    false,
-                    None,
-                )
+        // Train GRU model
+        let (trained_gru, _) =
+            minute::gru::step_4_train_model::train_gru_model(features, targets, gru_config, &device)
                 .map_err(|e| {
-                    PolarsError::ComputeError(format!("Tensor creation error: {}", e).into())
+                    PolarsError::ComputeError(format!("GRU training error: {}", e).into())
                 })?;
 
-            // Train GRU model
-            let ep_start = Instant::now();
-            let (trained_gru, metadata) = minute::gru::step_4_train_model::train_gru_model(
-                features,
-                targets,
-                training_config,
+        println!("GRU model training completed.");
+
+        // Create tensors for GRU evaluation
+        let (test_features, test_targets) =
+            step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
+                &test_df,
+                constants::SEQUENCE_LENGTH,
+                forecast_horizon,
                 &device,
-            )
-            .map_err(|e| PolarsError::ComputeError(format!("GRU training error: {}", e).into()))?;
-
-            // Save the trained GRU model
-            crate::util::model_utils::save_trained_gru_model(
-                &trained_gru,
-                ticker,
-                model_type,
-                &model_name,
-                metadata.input_size,
-                metadata.hidden_size,
-                metadata.output_size,
-                metadata.num_layers,
-                metadata.bidirectional,
-                metadata.dropout,
-            )
-            .map_err(|e| PolarsError::ComputeError(format!("Model saving error: {}", e).into()))?;
-
-            println!(
-                "Trained and saved new GRU model. Epoch took {:?}",
-                ep_start.elapsed()
-            );
-
-            // Evaluate GRU model
-            println!("Evaluating GRU model on test data...");
-            let mut test_normalized = test_df.clone();
-            minute::lstm::step_1_tensor_preparation::normalize_features(
-                &mut test_normalized,
-                &["close", "open", "high", "low"],
                 false,
-                false,
+                None,
             )
             .map_err(|e| {
-                PolarsError::ComputeError(format!("Test data normalization error: {}", e).into())
+                PolarsError::ComputeError(format!("Test feature preparation error: {}", e).into())
             })?;
 
-            // Create test tensors
-            let (test_features, test_targets) =
-                minute::lstm::step_1_tensor_preparation::dataframe_to_tensors::<BurnBackend>(
-                    &test_normalized,
-                    constants::SEQUENCE_LENGTH,
-                    forecast_horizon,
-                    &device,
-                    false,
-                    None,
-                )
-                .map_err(|e| {
-                    PolarsError::ComputeError(format!("Test tensor creation error: {}", e).into())
-                })?;
+        // Evaluate GRU model
+        let mse = minute::gru::step_4_train_model::evaluate_model(
+            &trained_gru,
+            test_features,
+            test_targets,
+        )
+        .map_err(|e| {
+            PolarsError::ComputeError(format!("GRU evaluation error: {}", e).into())
+        })?;
 
-            // Evaluate
-            let mse = minute::gru::step_4_train_model::evaluate_model(
-                &trained_gru,
-                test_features,
-                test_targets,
-            )
-            .map_err(|e| {
-                PolarsError::ComputeError(format!("GRU evaluation error: {}", e).into())
-            })?;
+        println!("GRU Test MSE: {:.4}", mse);
+    } else if model_type == "cnnlstm" {
+        // Configure CNN-LSTM training
+        let cnnlstm_config = minute::cnnlstm::step_4_train_model::TrainingConfig {
+            learning_rate: 0.001,
+            batch_size: 16,            // Reduced from 32 to use less memory
+            epochs: 5,                 // Reduced from 10 to finish faster
+            test_split: 0.2,
+            // Increased dropout to reduce overfitting and memory usage
+            dropout: constants::DEFAULT_DROPOUT * 1.5,
+            // Early stopping settings
+            patience: 2,               // Reduced from 3 to stop earlier if not improving
+            min_delta: 0.001,
+            // Use Huber loss to be more robust
+            use_huber_loss: true,
+            // Display metrics during training
+            display_metrics: true,
+            display_interval: 1,
+            // Use default for any additional fields
+            ..Default::default()
+        };
 
-            println!("GRU Test MSE: {:.4}", mse);
-        }
+        // CNN-LSTM model training and evaluation
+        println!("Starting CNN-LSTM model training...");
+        let forecast_horizon = 60;    // Reduced from 390 to significantly decrease memory usage
+
+        // Train CNN-LSTM model
+        let (trained_cnnlstm, loss_history) = minute::cnnlstm::step_4_train_model::train_model(
+            train_df.clone(),
+            cnnlstm_config,
+            &device,
+            ticker,
+            model_type,
+            forecast_horizon,
+        )
+        .map_err(|e| PolarsError::ComputeError(format!("CNN-LSTM training error: {}", e).into()))?;
+
+        println!("CNN-LSTM model training completed. Final loss: {:.6}", loss_history.last().unwrap_or(&0.0));
+
+        // Evaluate CNN-LSTM model
+        let rmse = minute::cnnlstm::step_4_train_model::evaluate_model(
+            &trained_cnnlstm,
+            test_df.clone(),
+            &device,
+            forecast_horizon,
+        )
+        .map_err(|e| {
+            PolarsError::ComputeError(format!("CNN-LSTM evaluation error: {}", e).into())
+        })?;
+
+        println!("CNN-LSTM Test RMSE: {:.4}", rmse);
+        
+        // Save the model
+        let model_name = format!("{}_cnnlstm_model", ticker);
+        model_path = crate::util::model_utils::get_model_path(ticker, model_type).join(model_name.clone());
+        
+        minute::cnnlstm::step_6_model_serialization::save_model(
+            &trained_cnnlstm, 
+            &model_path
+        ).map_err(|e| {
+            PolarsError::ComputeError(format!("CNN-LSTM model saving error: {}", e).into())
+        })?;
+        
+        println!("CNN-LSTM model saved to: {}", model_path.display());
     }
 
-    // Return the path to the saved model
+    // Return path placeholder that will be replaced with the actual path
     Ok(model_path)
 }
 
@@ -464,6 +484,147 @@ fn generate_predictions(
                     gru_preds[i],
                     lstm_preds[i]
                 );
+            }
+        }
+    } else if model_type == "cnnlstm" {
+        // Load CNN-LSTM model
+        let cnnlstm_model_name = format!("{}_cnnlstm_model", ticker);
+        let model_path = crate::util::model_utils::get_model_path(&ticker, model_type).join(&cnnlstm_model_name);
+        
+        println!("Loading CNN-LSTM model from: {}", model_path.display());
+        
+        // Load the CNN-LSTM model
+        let loaded_cnnlstm = minute::cnnlstm::step_6_model_serialization::load_model::<BurnBackend>(
+            &model_path,
+            &device,
+        ).map_err(|e| {
+            PolarsError::ComputeError(format!("CNN-LSTM model loading error: {}", e).into())
+        })?;
+        
+        // Generate CNN-LSTM predictions
+        println!(
+            "Generating CNN-LSTM forecast for the next trading day ({} minutes)...",
+            forecast_horizon
+        );
+        
+        let predictions = minute::cnnlstm::step_5_prediction::forecast(
+            &loaded_cnnlstm,
+            &df,
+            &device,
+            forecast_horizon,
+        ).map_err(|e| {
+            PolarsError::ComputeError(format!("CNN-LSTM forecast error: {}", e).into())
+        })?;
+        
+        // Print per-minute predictions with timestamps starting from 09:30
+        println!("Per-minute CNN-LSTM predictions for the next trading day:");
+        let mut hour = 9;
+        let mut minute = 30;
+        
+        // Handle the case where we might have fewer predictions than expected
+        let prediction_count = predictions.len().min(forecast_horizon);
+        
+        for i in 0..prediction_count {
+            println!("{:02}:{:02} - Minute {}: ${:.2}", hour, minute, i + 1, predictions[i]);
+            minute += 1;
+            if minute == 60 {
+                minute = 0;
+                hour += 1;
+            }
+        }
+        
+        // Compare with other models if they exist
+        let lstm_model_path = crate::util::model_utils::get_model_path(&ticker, "lstm").join(&model_name);
+        let gru_model_path = crate::util::model_utils::get_model_path(&ticker, "gru").join(&model_name);
+        
+        if lstm_model_path.exists() || gru_model_path.exists() {
+            println!("Other models found. Comparing model predictions...");
+            
+            let mut comparison_predictions = Vec::new();
+            let mut model_names = Vec::new();
+            
+            // Add CNN-LSTM predictions
+            comparison_predictions.push(predictions.clone());
+            model_names.push("CNN-LSTM".to_string());
+            
+            // Add LSTM predictions if available
+            if lstm_model_path.exists() {
+                let (loaded_lstm, _) = crate::util::model_utils::load_trained_lstm_model::<BurnBackend>(
+                    &ticker,
+                    "lstm",
+                    &model_name,
+                    &device,
+                ).map_err(|e| {
+                    PolarsError::ComputeError(format!("LSTM model loading error: {}", e).into())
+                })?;
+                
+                let lstm_preds = minute::lstm::step_5_prediction::ensemble_forecast(
+                    &loaded_lstm,
+                    df.clone(),
+                    &device,
+                    10, // Compare first 10 minutes
+                ).map_err(|e| {
+                    PolarsError::ComputeError(format!("LSTM forecast error: {}", e).into())
+                })?;
+                
+                comparison_predictions.push(lstm_preds);
+                model_names.push("LSTM".to_string());
+            }
+            
+            // Add GRU predictions if available
+            if gru_model_path.exists() {
+                let (loaded_gru, _) = crate::util::model_utils::load_trained_gru_model::<BurnBackend>(
+                    &ticker,
+                    "gru",
+                    &model_name,
+                    &device,
+                ).map_err(|e| {
+                    PolarsError::ComputeError(format!("GRU model loading error: {}", e).into())
+                })?;
+                
+                let gru_preds = minute::gru::step_5_prediction::predict_multiple_steps(
+                    &loaded_gru,
+                    df.clone(),
+                    10, // Compare first 10 minutes
+                    &device,
+                    false, // don't use extended features
+                ).map_err(|e| {
+                    PolarsError::ComputeError(format!("GRU forecast error: {}", e).into())
+                })?;
+                
+                comparison_predictions.push(gru_preds);
+                model_names.push("GRU".to_string());
+            }
+            
+            // Print comparison table
+            println!("Model comparison (first 10 minutes):");
+            
+            // Print header
+            print!("Minute |");
+            for name in &model_names {
+                print!(" {:13} |", name);
+            }
+            println!();
+            
+            // Print separator
+            print!("-----");
+            for _ in 0..model_names.len() {
+                print!("-----------------");
+            }
+            println!();
+            
+            // Print predictions
+            for i in 0..10.min(comparison_predictions[0].len()) {
+                print!("{:6} |", i + 1);
+                
+                for preds in &comparison_predictions {
+                    if i < preds.len() {
+                        print!(" ${:12.2} |", preds[i]);
+                    } else {
+                        print!(" {:14} |", "N/A");
+                    }
+                }
+                println!();
             }
         }
     }
