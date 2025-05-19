@@ -1,14 +1,14 @@
 [package]
 name = "ClawFoxyVision"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "ClawFoxyVision: Price prediction using LSTM neural networks"
+description = "Advanced financial time series forecasting library using LSTM, GRU, and CNN-LSTM neural networks for price prediction with Rust and Burn"
 license = "MIT"
 authors = ["ClawFoxyVision Team"]
 readme = "README.md"
-repository = "https://github.com/ClawFoxyVision/predict_price_lstm"
-homepage = "https://github.com/ClawFoxyVision/predict_price_lstm"
-documentation = "https://docs.rs/predict_price_lstm"
+repository = "https://github.com/rustic-ml/ClawFoxyVision"
+homepage = "https://github.com/rustic-ml/ClawFoxyVision"
+documentation = "https://docs.rs/ClawFoxyVision"
 keywords = ["time-series", "forecasting", "lstm", "neural-networks", "price-prediction"]
 categories = ["science", "mathematics", "algorithms", "finance"]
 # Exclude files and directories from being included in the published package
@@ -16,6 +16,15 @@ exclude = [
     "src/test/*",
     "examples/*",
     "target/*",
+    "models/*",
+    "Cargo.lock",
+    ".gitignore",
+    "ClawFoxyVision_250px.png",
+    "ClawFoxyVision.png",
+    "cursor-extensions.txt",
+    "rustfmt.toml",
+    "run_experiment.sh",
+    "run_model.sh"
 ]
 
 [dependencies]
